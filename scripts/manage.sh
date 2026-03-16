@@ -519,6 +519,34 @@ status_webdav() {
 
 do_install() {
     print_header
+    
+    # 检查是否已安装
+    if [[ -f "$CONFIG_FILE" ]]; then
+        print_info "检测到已有配置"
+        echo ""
+        echo "当前配置："
+        local ROOT=$(read_config '.obsidianRoot')
+        local NAME=$(read_config '.agent.name')
+        local HOST=$(read_config '.agent.host')
+        local SAVE_MODE=$(read_config '.saveMode')
+        echo "  对话目录: $ROOT/${NAME}@${HOST}"
+        echo "  保存机制: $SAVE_MODE"
+        echo ""
+        echo -n "是否重新配置？[y/N]: "
+        read -r RECONFIG
+        if [[ ! "$RECONFIG" =~ ^[Yy] ]]; then
+            print_info "保留现有配置"
+            # 检查服务状态
+            if [[ -f "$PID_FILE" ]] && ps -p $(cat "$PID_FILE") > /dev/null 2>&1; then
+                print_success "服务已运行"
+            else
+                print_step "启动服务..."
+                start_webdav
+            fi
+            return 0
+        fi
+    fi
+    
     print_step "开始安装..."
     echo ""
     
@@ -531,9 +559,15 @@ do_install() {
     local ROOT=$(read_config '.obsidianRoot')
     local NAME=$(read_config '.agent.name')
     local HOST=$(read_config '.agent.host')
-    # 使用 @ 符号作为目录名分隔符
-    mkdir -p "$ROOT/${NAME}@${HOST}"
-    print_success "目录已创建: $ROOT/${NAME}@${HOST}"
+    
+    # 检查目录是否已存在
+    local AGENT_DIR="$ROOT/${NAME}@${HOST}"
+    if [[ -d "$AGENT_DIR" ]]; then
+        print_info "目录已存在: $AGENT_DIR"
+    else
+        mkdir -p "$AGENT_DIR"
+        print_success "目录已创建: $AGENT_DIR"
+    fi
     
     local AUTO=$(read_config '.autoStart')
     [[ "$AUTO" == "true" ]] && setup_autostart "true"
@@ -558,6 +592,8 @@ do_install() {
         echo ""
         echo "  自动保存已开启，所有对话将自动保存"
     fi
+    echo ""
+    echo "  修改配置: bash scripts/manage.sh config"
     echo ""
 }
 

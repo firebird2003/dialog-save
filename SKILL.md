@@ -98,6 +98,16 @@ updated: 2026-03-16T21:00:00+08:00
 }
 ```
 
+## 修改配置
+
+运行配置脚本修改设置：
+
+```bash
+cd ~/.openclaw/workspace/skills/dialog-save && bash scripts/manage.sh config
+```
+
+或进入交互菜单选择"修改配置"。
+
 ## iCloud 兼容说明
 
 - 目录名使用 `@` 符号分隔（如 `管理者@yejimaca2141`）

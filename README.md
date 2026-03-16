@@ -14,8 +14,10 @@
 ## 快速开始
 
 ```bash
-cd ~/.openclaw/workspace/skills && git clone https://github.com/firebird2003/dialog-save.git && cd dialog-save && bash scripts/manage.sh
+cd ~/.openclaw/workspace/skills && [ -d dialog-save ] || git clone https://github.com/firebird2003/dialog-save.git && cd dialog-save && bash scripts/manage.sh
 ```
+
+**说明**：如果目录已存在，自动跳过克隆，直接运行管理脚本。
 
 ## 交互菜单
 
