@@ -1,0 +1,22 @@
+{
+  "version": "1.3.0",
+  "obsidianRoot": "",
+  "webdav": {
+    "enabled": true,
+    "port": 8080,
+    "host": "0.0.0.0"
+  },
+  "agent": {
+    "name": "",
+    "host": ""
+  },
+  "sync": {
+    "retryIntervalMinutes": 1,
+    "maxRetries": 3,
+    "cacheDir": ".cache/pending"
+  },
+  "saveMode": "manual",
+  "mode": "local",
+  "remoteWebdavUrl": "",
+  "autoStart": false
+}

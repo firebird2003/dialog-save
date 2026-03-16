@@ -1,0 +1,21 @@
+# 缓存目录
+.cache/
+
+# 日志
+logs/
+
+# PID 文件
+.webdav.pid
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 临时文件
+*.tmp
+*.log

@@ -1,0 +1,15 @@
+---
+date: {{DATE}}
+time: {{TIME}}
+agent: {{AGENT}}
+host: {{HOST}}
+topic: {{TOPIC}}
+project: {{PROJECT}}
+tags: [{{TAGS}}]
+created: {{CREATED}}
+updated: {{UPDATED}}
+---
+
+# {{TITLE}}
+
+{{CONTENT}}
