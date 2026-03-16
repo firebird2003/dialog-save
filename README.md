@@ -10,20 +10,24 @@
 - 🔍 frontmatter 元数据支持，方便检索
 - 🌐 WebDAV 服务，多主机同步
 - 💾 离线缓存，网络恢复后自动同步
+- 🔄 自动检测版本更新
 
 ## 快速开始
 
 ```bash
-cd ~/.openclaw/workspace/skills && [ -d dialog-save ] || git clone https://github.com/firebird2003/dialog-save.git && cd dialog-save && bash scripts/manage.sh
+cd ~/.openclaw/workspace/skills && [ -d dialog-save ] && (cd dialog-save && git pull origin main) || git clone https://github.com/firebird2003/dialog-save.git && cd dialog-save && bash scripts/manage.sh
 ```
 
-**说明**：如果目录已存在，自动跳过克隆，直接运行管理脚本。
+**说明**：
+- 目录已存在 → 自动拉取最新版本
+- 目录不存在 → 克隆仓库
+- 然后进入交互菜单
 
 ## 交互菜单
 
 ```
 ╔════════════════════════════════════════╗
-║  dialog-save v1.3.0                    ║
+║  dialog-save v1.3.2                    ║
 ║  OpenClaw 对话保存技能                 ║
 ╚════════════════════════════════════════╝
 
@@ -34,8 +38,9 @@ cd ~/.openclaw/workspace/skills && [ -d dialog-save ] || git clone https://githu
   3) 启动服务        - 启动 WebDAV 服务
   4) 停止服务        - 停止 WebDAV 服务
   5) 查看状态        - 查看配置和服务状态
-  6) 更新日志        - 查看版本更新记录
-  7) 卸载            - 移除技能和数据
+  6) 检查更新        - 检查并更新到最新版本
+  7) 更新日志        - 查看版本更新记录
+  8) 卸载            - 移除技能和数据
   0) 退出
 ```
 
@@ -49,8 +54,6 @@ Obsidian笔记库/
 └── 其他笔记.md
 ```
 
-**目录名格式**：`代理名@主机名`（使用 `@` 符号）
-
 ## 保存机制
 
 ### 自动模式
@@ -63,14 +66,19 @@ Obsidian笔记库/
 - 智能话题识别
 - 适合选择性保存
 
-## 使用方法
+## 版本更新
 
-**手动模式**：对话中说以下短语
-- "存入本地目录"
-- "保存对话"
-- "存档"
+```bash
+# 方法1：运行安装命令（自动检测更新）
+cd ~/.openclaw/workspace/skills/dialog-save && bash scripts/manage.sh
 
-**自动模式**：无需任何操作
+# 方法2：手动更新
+cd ~/.openclaw/workspace/skills/dialog-save && git pull origin main
+
+# 方法3：菜单选择
+bash scripts/manage.sh
+# 选择 "6) 检查更新"
+```
 
 ## 配置项
 
@@ -86,32 +94,9 @@ Obsidian笔记库/
 
 ## iCloud 兼容说明
 
-### 问题原因
-
-iCloud Drive 同步时会检测目录名冲突，使用不同分隔符（如 `-`）创建的目录可能与云端版本冲突，导致目录消失。
-
-### 解决方案
-
 - 目录名使用 `@` 符号：`代理名@主机名`
 - 与现有 iCloud 同步结构保持一致
 - 避免中间子目录
-
-## 技术实现
-
-| 组件 | 技术 |
-|------|------|
-| WebDAV | rclone |
-| 配置 | JSON |
-| 脚本 | Bash |
-| 格式 | Markdown + YAML frontmatter |
-
-## 许可证
-
-MIT License
-
-## 作者
-
-yeji
 
 ## GitHub
 
@@ -119,20 +104,16 @@ https://github.com/firebird2003/dialog-save
 
 ## 更新日志
 
+### v1.3.2 (2026-03-16)
+- 新版本覆盖安装：目录已存在时自动 git pull 更新
+- 版本检测：显示当前版本和远程最新版本
+
+### v1.3.1 (2026-03-16)
+- 优化安装体验
+
 ### v1.3.0 (2026-03-16)
-- 目录名格式改为 `代理名@主机名`（兼容iCloud同步）
-- 新增保存机制选项：自动/手动
-- 自动模式：开启后自动保存所有对话
-- 手动模式：需要用户提示才保存
-
-### v1.2.0 (2026-03-16)
-- 移除中间子目录
-- 修复 PATH 环境变量问题
-- 优化 iCloud/Obsidian 兼容性
-
-### v1.1.0 (2026-03-16)
-- 统一交互式菜单管理
-- 依赖已存在时自动跳过安装
+- 目录名格式改为 `代理名@主机名`
+- 新增保存机制选项
 
 ### v1.0.0 (2026-03-16)
 - 初始版本

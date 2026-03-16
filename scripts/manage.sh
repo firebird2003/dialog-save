@@ -6,25 +6,24 @@
 # ============================================================
 
 # ==================== 版本信息 ====================
-VERSION="1.3.0"
+VERSION="1.3.2"
 RELEASE_DATE="2026-03-16"
 
 CHANGELOG="
+v1.3.2 (2026-03-16)
+  - 新版本覆盖安装：目录已存在时自动 git pull 更新
+  - 版本检测：显示当前版本和远程最新版本
+
+v1.3.1 (2026-03-16)
+  - 优化安装体验：检测已存在配置
+
 v1.3.0 (2026-03-16)
   - 目录名格式改为 代理名@主机名（兼容iCloud同步）
   - 新增保存机制选项：自动/手动
-  - 自动模式：开启后自动保存所有对话
-  - 手动模式：需要用户提示才保存
 
 v1.2.0 (2026-03-16)
   - 移除中间子目录
   - 修复 PATH 环境变量问题
-  - 优化 iCloud/Obsidian 兼容性
-
-v1.1.0 (2026-03-16)
-  - 统一交互式菜单管理
-  - 依赖已存在时自动跳过安装
-  - 安装后自动激活技能
 
 v1.0.0 (2026-03-16)
   - 初始版本
@@ -87,6 +86,7 @@ read_config() {
             '.mode') grep -o '"mode"[^,]*' "$CONFIG_FILE" | cut -d'"' -f4 ;;
             '.autoStart') grep -o '"autoStart"[^,}]*' "$CONFIG_FILE" | grep -o 'true\|false' ;;
             '.saveMode') grep -o '"saveMode"[^,}]*' "$CONFIG_FILE" | cut -d'"' -f4 ;;
+            '.version') grep -o '"version"[^,}]*' "$CONFIG_FILE" | head -1 | cut -d'"' -f4 ;;
             *) echo "" ;;
         esac
     else
@@ -101,6 +101,39 @@ detect_os() {
         Linux*)     echo "linux" ;;
         *)          echo "unknown" ;;
     esac
+}
+
+# ==================== 版本检查 ====================
+check_update() {
+    print_step "检查版本更新..."
+    
+    cd "$SKILL_DIR"
+    
+    # 获取远程最新版本
+    local REMOTE_VERSION=$(git fetch origin 2>/dev/null && git show origin/main:config.json 2>/dev/null | grep -o '"version"[^,}]*' | head -1 | cut -d'"' -f4)
+    
+    if [[ -n "$REMOTE_VERSION" ]]; then
+        echo "  当前版本: $VERSION"
+        echo "  最新版本: $REMOTE_VERSION"
+        
+        if [[ "$REMOTE_VERSION" != "$VERSION" ]]; then
+            echo ""
+            echo -n "发现新版本，是否更新？[Y/n]: "
+            read -r UPDATE_CHOICE
+            
+            if [[ ! "$UPDATE_CHOICE" =~ ^[Nn] ]]; then
+                print_step "更新到最新版本..."
+                if git pull origin main 2>/dev/null; then
+                    print_success "更新成功，请重新运行脚本"
+                    exit 0
+                else
+                    print_error "更新失败，请手动执行: git pull origin main"
+                fi
+            fi
+        else
+            print_success "已是最新版本"
+        fi
+    fi
 }
 
 # ==================== 依赖检查与安装 ====================
@@ -274,7 +307,7 @@ do_config() {
     read -r AGENT_HOST
     AGENT_HOST=${AGENT_HOST:-$DEFAULT_HOST}
     
-    # 保存机制（新增）
+    # 保存机制
     echo ""
     echo -e "${YELLOW}5. 保存机制${NC}"
     echo "   1) 手动 - 需要用户说'存入本地目录'才保存"
@@ -520,6 +553,9 @@ status_webdav() {
 do_install() {
     print_header
     
+    # 检查版本更新
+    check_update
+    
     # 检查是否已安装
     if [[ -f "$CONFIG_FILE" ]]; then
         print_info "检测到已有配置"
@@ -529,6 +565,8 @@ do_install() {
         local NAME=$(read_config '.agent.name')
         local HOST=$(read_config '.agent.host')
         local SAVE_MODE=$(read_config '.saveMode')
+        local CFG_VERSION=$(read_config '.version')
+        echo "  配置版本: ${CFG_VERSION:-未知}"
         echo "  对话目录: $ROOT/${NAME}@${HOST}"
         echo "  保存机制: $SAVE_MODE"
         echo ""
@@ -536,7 +574,6 @@ do_install() {
         read -r RECONFIG
         if [[ ! "$RECONFIG" =~ ^[Yy] ]]; then
             print_info "保留现有配置"
-            # 检查服务状态
             if [[ -f "$PID_FILE" ]] && ps -p $(cat "$PID_FILE") > /dev/null 2>&1; then
                 print_success "服务已运行"
             else
@@ -560,7 +597,6 @@ do_install() {
     local NAME=$(read_config '.agent.name')
     local HOST=$(read_config '.agent.host')
     
-    # 检查目录是否已存在
     local AGENT_DIR="$ROOT/${NAME}@${HOST}"
     if [[ -d "$AGENT_DIR" ]]; then
         print_info "目录已存在: $AGENT_DIR"
@@ -582,6 +618,7 @@ do_install() {
     echo -e "${GREEN}║${NC}  ${BOLD}安装完成！技能已激活${NC}                  ${GREEN}║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
     echo ""
+    echo "  版本: $VERSION"
     echo "  配置文件: $CONFIG_FILE"
     echo "  对话目录: $ROOT/${NAME}@${HOST}"
     echo "  保存机制: $SAVE_MODE"
@@ -594,6 +631,7 @@ do_install() {
     fi
     echo ""
     echo "  修改配置: bash scripts/manage.sh config"
+    echo "  检查更新: bash scripts/manage.sh update"
     echo ""
 }
 
@@ -644,7 +682,9 @@ do_status() {
         local NAME=$(read_config '.agent.name')
         local HOST=$(read_config '.agent.host')
         local SAVE_MODE=$(read_config '.saveMode')
+        local CFG_VERSION=$(read_config '.version')
         echo -e "配置文件: ${GREEN}已配置${NC}"
+        echo "  版本: ${CFG_VERSION:-未知}"
         echo "  Obsidian: $ROOT"
         echo "  对话目录: $ROOT/${NAME}@${HOST}"
         echo "  代理: ${NAME}@${HOST}"
@@ -686,11 +726,12 @@ show_menu() {
     echo "  3) 启动服务        - 启动 WebDAV 服务"
     echo "  4) 停止服务        - 停止 WebDAV 服务"
     echo "  5) 查看状态        - 查看配置和服务状态"
-    echo "  6) 更新日志        - 查看版本更新记录"
-    echo "  7) 卸载            - 移除技能和数据"
+    echo "  6) 检查更新        - 检查并更新到最新版本"
+    echo "  7) 更新日志        - 查看版本更新记录"
+    echo "  8) 卸载            - 移除技能和数据"
     echo "  0) 退出"
     echo ""
-    echo -n "请输入选项 [0-7]: "
+    echo -n "请输入选项 [0-8]: "
 }
 
 main_menu() {
@@ -704,8 +745,9 @@ main_menu() {
             3) start_webdav ;;
             4) stop_webdav ;;
             5) do_status ;;
-            6) show_changelog ;;
-            7) do_uninstall; return ;;
+            6) check_update ;;
+            7) show_changelog ;;
+            8) do_uninstall; return ;;
             0) echo ""; print_info "再见"; exit 0 ;;
             *) print_warning "无效选项" ;;
         esac
@@ -725,6 +767,7 @@ case "${1:-}" in
     status)         do_status ;;
     start)          start_webdav ;;
     stop)           stop_webdav ;;
+    update)         check_update ;;
     changelog)      show_changelog ;;
     _start_service) 
         start_webdav
@@ -733,7 +776,7 @@ case "${1:-}" in
         main_menu
         ;;
     *)
-        echo "用法: $0 [install|uninstall|config|status|start|stop|changelog]"
+        echo "用法: $0 [install|uninstall|config|status|start|stop|update|changelog]"
         echo ""
         echo "无参数运行进入交互菜单"
         ;;
