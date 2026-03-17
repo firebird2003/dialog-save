@@ -942,14 +942,14 @@ show_saved() {
     echo ""
     
     # 按日期显示
-    for DATE_DIR in $(ls -1d "$AGENT_DIR"/*/ 2>/dev/null | sort -r); do
+    find "$AGENT_DIR" -type d -mindepth 1 -maxdepth 1 | sort -r | while read DATE_DIR; do
         local DATE_NAME=$(basename "$DATE_DIR")
         echo -e "${CYAN}$DATE_NAME${NC}"
         
-        for MD_FILE in "$DATE_DIR"*.md 2>/dev/null; do
-            [[ -f "$MD_FILE" ]] || continue
+        find "$DATE_DIR" -name "*.md" -type f | while read MD_FILE; do
             local FILENAME=$(basename "$MD_FILE" .md)
-            local TOPIC=$(echo "$FILENAME" | sed 's/^[0-9]*+//')
+            # 移除时间戳前缀和 session id 后缀
+            local TOPIC=$(echo "$FILENAME" | sed -E 's/^[0-9]+\+//' | sed -E 's/_[a-f0-9]{6,8}$//')
             local SIZE=$(ls -lh "$MD_FILE" | awk '{print $5}')
             echo "  └─ $TOPIC ($SIZE)"
         done
