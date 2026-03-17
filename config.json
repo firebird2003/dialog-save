@@ -1,22 +1,22 @@
 {
-  "version": "1.3.2",
-  "obsidianRoot": "",
+  "version": "2.0.0",
+  "obsidianRoot": "/Users/yeji/Library/Mobile Documents/iCloud~md~obsidian/Documents/YejiNote/00clawrecord",
   "webdav": {
     "enabled": true,
     "port": 8080,
     "host": "0.0.0.0"
   },
   "agent": {
-    "name": "",
-    "host": ""
+    "name": "管理者",
+    "host": "yejimaca2141"
   },
   "sync": {
     "retryIntervalMinutes": 1,
     "maxRetries": 3,
     "cacheDir": ".cache/pending"
   },
-  "saveMode": "manual",
+  "saveMode": "auto",
   "mode": "local",
   "remoteWebdavUrl": "",
-  "autoStart": false
+  "autoStart": true
 }

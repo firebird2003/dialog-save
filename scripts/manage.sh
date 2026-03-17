@@ -6,10 +6,17 @@
 # ============================================================
 
 # ==================== 版本信息 ====================
-VERSION="1.3.2"
-RELEASE_DATE="2026-03-16"
+VERSION="2.0.0"
+RELEASE_DATE="2026-03-17"
 
 CHANGELOG="
+v2.0.0 (2026-03-17)
+  - 新增实际对话保存功能：解析 OpenClaw session 文件
+  - 自动保存模式：定时监控并保存新对话
+  - 手动保存命令：save-now 立即保存当前对话
+  - 状态追踪：增量保存，避免重复
+  - 话题检测：自动从对话中提取主题
+
 v1.3.2 (2026-03-16)
   - 新版本覆盖安装：目录已存在时自动 git pull 更新
   - 版本检测：显示当前版本和远程最新版本
@@ -35,7 +42,9 @@ SKILL_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG_FILE="$SKILL_DIR/config.json"
 LOG_DIR="$SKILL_DIR/logs"
 PID_FILE="$SKILL_DIR/.webdav.pid"
+MONITOR_PID_FILE="$SKILL_DIR/.monitor.pid"
 CACHE_DIR="$SKILL_DIR/.cache/pending"
+STATE_FILE="$SKILL_DIR/.cache/save_state.json"
 
 # ==================== 确保命令可用 ====================
 export PATH="/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:$PATH"
@@ -699,10 +708,15 @@ do_status() {
     status_webdav
     
     echo ""
+    echo -e "自动保存监控:"
+    status_monitor
+    
+    echo ""
     echo -e "依赖:"
     check_dependency rclone && echo -e "  rclone: ${GREEN}已安装${NC}" || echo -e "  rclone: ${RED}未安装${NC}"
     check_dependency jq && echo -e "  jq: ${GREEN}已安装${NC}" || echo -e "  jq: ${RED}未安装${NC}"
     check_dependency curl && echo -e "  curl: ${GREEN}已安装${NC}" || echo -e "  curl: ${RED}未安装${NC}"
+    command -v python3 &> /dev/null && echo -e "  python3: ${GREEN}已安装${NC}" || echo -e "  python3: ${RED}未安装${NC}"
 }
 
 # ==================== 更新日志 ====================
@@ -723,15 +737,17 @@ show_menu() {
     echo ""
     echo "  1) 安装/重新安装    - 安装依赖、配置、激活"
     echo "  2) 修改配置        - 更改设置"
-    echo "  3) 启动服务        - 启动 WebDAV 服务"
-    echo "  4) 停止服务        - 停止 WebDAV 服务"
+    echo "  3) 启动服务        - 启动 WebDAV + 自动监控"
+    echo "  4) 停止服务        - 停止所有服务"
     echo "  5) 查看状态        - 查看配置和服务状态"
-    echo "  6) 检查更新        - 检查并更新到最新版本"
-    echo "  7) 更新日志        - 查看版本更新记录"
-    echo "  8) 卸载            - 移除技能和数据"
-    echo "  0) 退出"
+    echo "  6) 立即保存        - 保存当前对话"
+    echo "  7) 查看已保存      - 查看已保存的对话列表"
+    echo "  8) 检查更新        - 检查并更新到最新版本"
+    echo "  9) 更新日志        - 查看版本更新记录"
+    echo "  0) 卸载            - 移除技能和数据"
+    echo "  q) 退出"
     echo ""
-    echo -n "请输入选项 [0-8]: "
+    echo -n "请输入选项: "
 }
 
 main_menu() {
@@ -742,13 +758,15 @@ main_menu() {
         case "$CHOICE" in
             1) do_install ;;
             2) do_config && { stop_webdav; start_webdav; } ;;
-            3) start_webdav ;;
-            4) stop_webdav ;;
+            3) start_webdav; start_monitor ;;
+            4) stop_webdav; stop_monitor ;;
             5) do_status ;;
-            6) check_update ;;
-            7) show_changelog ;;
-            8) do_uninstall; return ;;
-            0) echo ""; print_info "再见"; exit 0 ;;
+            6) save_now ;;
+            7) show_saved ;;
+            8) check_update ;;
+            9) show_changelog ;;
+            0) do_uninstall; return ;;
+            q|Q) echo ""; print_info "再见"; exit 0 ;;
             *) print_warning "无效选项" ;;
         esac
         
@@ -758,25 +776,234 @@ main_menu() {
     done
 }
 
+# ==================== 对话保存功能 ====================
+
+# 运行 Python 解析器
+run_parser() {
+    local ARGS="$1"
+    local PYTHON_CMD=""
+    
+    # 查找 Python
+    if command -v python3 &> /dev/null; then
+        PYTHON_CMD="python3"
+    elif command -v python &> /dev/null; then
+        PYTHON_CMD="python"
+    else
+        print_error "Python 未安装"
+        return 1
+    fi
+    
+    cd "$SKILL_DIR"
+    $PYTHON_CMD lib/session_parser.py $ARGS
+}
+
+# 立即保存对话
+save_now() {
+    print_step "保存对话..."
+    
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        print_error "请先配置"
+        return 1
+    fi
+    
+    local SAVE_MODE=$(read_config '.saveMode')
+    
+    # 运行自动保存
+    run_parser "--auto"
+    
+    return $?
+}
+
+# 启动监控服务
+start_monitor() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        print_error "请先配置"
+        return 1
+    fi
+    
+    local SAVE_MODE=$(read_config '.saveMode')
+    if [[ "$SAVE_MODE" != "auto" ]]; then
+        print_warning "当前为手动模式，无需启动监控"
+        print_info "如需自动保存，请运行 config 修改保存机制"
+        return 0
+    fi
+    
+    if [[ -f "$MONITOR_PID_FILE" ]] && ps -p $(cat "$MONITOR_PID_FILE") > /dev/null 2>&1; then
+        print_success "监控服务已运行 (PID: $(cat $MONITOR_PID_FILE))"
+        return 0
+    fi
+    
+    mkdir -p "$LOG_DIR" "$CACHE_DIR"
+    
+    # 创建监控脚本
+    local MONITOR_SCRIPT="$SKILL_DIR/.cache/monitor_loop.sh"
+    cat > "$MONITOR_SCRIPT" << 'MONITOR_EOF'
+#!/bin/bash
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOG_FILE="$SKILL_DIR/logs/monitor.log"
+STATE_FILE="$SKILL_DIR/.cache/save_state.json"
+
+log() {
+    echo "[$(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+}
+
+log "Monitor started"
+
+while true; do
+    # 每 60 秒检查一次
+    sleep 60
+    
+    # 运行自动保存
+    if command -v python3 &> /dev/null; then
+        cd "$SKILL_DIR"
+        python3 lib/session_parser.py --auto >> "$LOG_FILE" 2>&1
+    fi
+done
+MONITOR_EOF
+    chmod +x "$MONITOR_SCRIPT"
+    
+    # 后台运行
+    nohup "$MONITOR_SCRIPT" > "$LOG_DIR/monitor.log" 2>&1 &
+    echo $! > "$MONITOR_PID_FILE"
+    
+    sleep 1
+    
+    if ps -p $(cat "$MONITOR_PID_FILE") > /dev/null 2>&1; then
+        print_success "监控服务已启动 (PID: $(cat $MONITOR_PID_FILE))"
+        echo "  日志: $LOG_DIR/monitor.log"
+        echo "  检查间隔: 60 秒"
+    else
+        print_error "启动失败，查看日志: $LOG_DIR/monitor.log"
+        return 1
+    fi
+}
+
+# 停止监控服务
+stop_monitor() {
+    if [[ -f "$MONITOR_PID_FILE" ]]; then
+        local PID=$(cat "$MONITOR_PID_FILE")
+        kill $PID 2>/dev/null || true
+        rm -f "$MONITOR_PID_FILE"
+        print_success "监控服务已停止"
+    else
+        print_info "监控服务未运行"
+    fi
+}
+
+# 监控服务状态
+status_monitor() {
+    if [[ -f "$MONITOR_PID_FILE" ]] && ps -p $(cat "$MONITOR_PID_FILE") > /dev/null 2>&1; then
+        local PID=$(cat "$MONITOR_PID_FILE")
+        print_success "监控服务运行中 (PID: $PID)"
+        
+        if [[ -f "$STATE_FILE" ]]; then
+            local LAST_RUN=$("$JQ_CMD" -r '.last_run // "never"' "$STATE_FILE" 2>/dev/null)
+            echo "  最后运行: $LAST_RUN"
+        fi
+        
+        if [[ -f "$LOG_DIR/monitor.log" ]]; then
+            local LAST_LOG=$(tail -1 "$LOG_DIR/monitor.log" 2>/dev/null)
+            echo "  最近日志: $LAST_LOG"
+        fi
+    else
+        print_info "监控服务未运行"
+    fi
+}
+
+# 重置状态
+reset_state() {
+    if [[ -f "$STATE_FILE" ]]; then
+        rm -f "$STATE_FILE"
+        print_success "状态已重置，下次保存将处理所有对话"
+    else
+        print_info "无状态文件"
+    fi
+}
+
+# 查看保存历史
+show_saved() {
+    local ROOT=$(read_config '.obsidianRoot')
+    local NAME=$(read_config '.agent.name')
+    local HOST=$(read_config '.agent.host')
+    
+    if [[ -z "$ROOT" || "$ROOT" == "null" ]]; then
+        print_error "请先配置"
+        return 1
+    fi
+    
+    local AGENT_DIR="$ROOT/${NAME}@${HOST}"
+    
+    if [[ ! -d "$AGENT_DIR" ]]; then
+        print_info "暂无保存的对话"
+        return 0
+    fi
+    
+    print_step "已保存的对话:"
+    echo ""
+    
+    # 按日期显示
+    for DATE_DIR in $(ls -1d "$AGENT_DIR"/*/ 2>/dev/null | sort -r); do
+        local DATE_NAME=$(basename "$DATE_DIR")
+        echo -e "${CYAN}$DATE_NAME${NC}"
+        
+        for MD_FILE in "$DATE_DIR"*.md 2>/dev/null; do
+            [[ -f "$MD_FILE" ]] || continue
+            local FILENAME=$(basename "$MD_FILE" .md)
+            local TOPIC=$(echo "$FILENAME" | sed 's/^[0-9]*+//')
+            local SIZE=$(ls -lh "$MD_FILE" | awk '{print $5}')
+            echo "  └─ $TOPIC ($SIZE)"
+        done
+        echo ""
+    done
+}
+
 # ==================== 命令行入口 ====================
 
 case "${1:-}" in
     install)        do_install ;;
     uninstall)      do_uninstall ;;
-    config)         do_config ;;
+    config)         do_config && { stop_webdav; start_webdav; } ;;
     status)         do_status ;;
     start)          start_webdav ;;
-    stop)           stop_webdav ;;
+    stop)           stop_webdav; stop_monitor ;;
     update)         check_update ;;
     changelog)      show_changelog ;;
+    
+    # 新增命令
+    save-now)       save_now ;;
+    save)           save_now ;;
+    start-monitor)  start_monitor ;;
+    stop-monitor)   stop_monitor ;;
+    status-monitor) status_monitor ;;
+    reset-state)    reset_state ;;
+    saved)          show_saved ;;
+    
     _start_service) 
         start_webdav
+        # 如果配置了自动保存，也启动监控
+        local SAVE_MODE=$(read_config '.saveMode')
+        [[ "$SAVE_MODE" == "auto" ]] && start_monitor
         ;;
     "")
         main_menu
         ;;
     *)
-        echo "用法: $0 [install|uninstall|config|status|start|stop|update|changelog]"
+        echo "用法: $0 [命令]"
+        echo ""
+        echo "命令:"
+        echo "  install        安装/重新安装"
+        echo "  config         修改配置"
+        echo "  start          启动 WebDAV 服务"
+        echo "  stop           停止所有服务"
+        echo "  status         查看状态"
+        echo "  save-now       立即保存对话"
+        echo "  start-monitor  启动自动监控（auto 模式）"
+        echo "  stop-monitor   停止自动监控"
+        echo "  saved          查看已保存的对话"
+        echo "  reset-state    重置保存状态"
+        echo "  update         检查更新"
+        echo "  changelog      查看更新日志"
+        echo "  uninstall      卸载"
         echo ""
         echo "无参数运行进入交互菜单"
         ;;
