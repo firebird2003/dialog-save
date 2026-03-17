@@ -3,13 +3,21 @@
 # ============================================================
 # dialog-save 统一管理脚本
 # 作者：yeji
+# 
+# 单行安装命令：
+# bash <(curl -sL https://raw.githubusercontent.com/firebird2003/dialog-save/main/install.sh)
 # ============================================================
 
 # ==================== 版本信息 ====================
-VERSION="2.0.0"
+VERSION="2.1.0"
 RELEASE_DATE="2026-03-17"
 
 CHANGELOG="
+v2.1.0 (2026-03-17)
+  - 改进安装体验：单行命令支持安装/升级
+  - 智能处理目录已存在的情况
+  - 依赖问题不会中断流程，仅警告
+
 v2.0.0 (2026-03-17)
   - 新增实际对话保存功能：解析 OpenClaw session 文件
   - 自动保存模式：定时监控并保存新对话
@@ -21,16 +29,9 @@ v1.3.2 (2026-03-16)
   - 新版本覆盖安装：目录已存在时自动 git pull 更新
   - 版本检测：显示当前版本和远程最新版本
 
-v1.3.1 (2026-03-16)
-  - 优化安装体验：检测已存在配置
-
 v1.3.0 (2026-03-16)
   - 目录名格式改为 代理名@主机名（兼容iCloud同步）
   - 新增保存机制选项：自动/手动
-
-v1.2.0 (2026-03-16)
-  - 移除中间子目录
-  - 修复 PATH 环境变量问题
 
 v1.0.0 (2026-03-16)
   - 初始版本
@@ -45,6 +46,8 @@ PID_FILE="$SKILL_DIR/.webdav.pid"
 MONITOR_PID_FILE="$SKILL_DIR/.monitor.pid"
 CACHE_DIR="$SKILL_DIR/.cache/pending"
 STATE_FILE="$SKILL_DIR/.cache/save_state.json"
+GITHUB_REPO="https://github.com/firebird2003/dialog-save.git"
+INSTALL_DIR="$HOME/.openclaw/workspace/skills/dialog-save"
 
 # ==================== 确保命令可用 ====================
 export PATH="/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:$PATH"
@@ -86,20 +89,24 @@ print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 # ==================== JSON 读取函数 ====================
 read_config() {
     local KEY="$1"
-    if [[ -z "$JQ_CMD" ]]; then
-        case "$KEY" in
-            '.obsidianRoot') grep -o '"obsidianRoot"[^,]*' "$CONFIG_FILE" | cut -d'"' -f4 ;;
-            '.agent.name') grep -o '"name"[^,]*' "$CONFIG_FILE" | head -1 | cut -d'"' -f4 ;;
-            '.agent.host') grep -o '"host"[^,]*' "$CONFIG_FILE" | head -1 | cut -d'"' -f4 ;;
-            '.webdav.port') grep -o '"port"[^,}]*' "$CONFIG_FILE" | head -1 | grep -o '[0-9]*' ;;
-            '.mode') grep -o '"mode"[^,]*' "$CONFIG_FILE" | cut -d'"' -f4 ;;
-            '.autoStart') grep -o '"autoStart"[^,}]*' "$CONFIG_FILE" | grep -o 'true\|false' ;;
-            '.saveMode') grep -o '"saveMode"[^,}]*' "$CONFIG_FILE" | cut -d'"' -f4 ;;
-            '.version') grep -o '"version"[^,}]*' "$CONFIG_FILE" | head -1 | cut -d'"' -f4 ;;
-            *) echo "" ;;
-        esac
+    if [[ -f "$CONFIG_FILE" ]]; then
+        if [[ -n "$JQ_CMD" ]]; then
+            "$JQ_CMD" -r "$KEY" "$CONFIG_FILE" 2>/dev/null
+        else
+            case "$KEY" in
+                '.obsidianRoot') grep -o '"obsidianRoot"[^,]*' "$CONFIG_FILE" | cut -d'"' -f4 ;;
+                '.agent.name') grep -o '"name"[^,]*' "$CONFIG_FILE" | head -1 | cut -d'"' -f4 ;;
+                '.agent.host') grep -o '"host"[^,]*' "$CONFIG_FILE" | head -1 | cut -d'"' -f4 ;;
+                '.webdav.port') grep -o '"port"[^,}]*' "$CONFIG_FILE" | head -1 | grep -o '[0-9]*' ;;
+                '.mode') grep -o '"mode"[^,]*' "$CONFIG_FILE" | cut -d'"' -f4 ;;
+                '.autoStart') grep -o '"autoStart"[^,}]*' "$CONFIG_FILE" | grep -o 'true\|false' ;;
+                '.saveMode') grep -o '"saveMode"[^,}]*' "$CONFIG_FILE" | cut -d'"' -f4 ;;
+                '.version') grep -o '"version"[^,}]*' "$CONFIG_FILE" | head -1 | cut -d'"' -f4 ;;
+                *) echo "" ;;
+            esac
+        fi
     else
-        "$JQ_CMD" -r "$KEY" "$CONFIG_FILE" 2>/dev/null
+        echo ""
     fi
 }
 
@@ -112,28 +119,37 @@ detect_os() {
     esac
 }
 
-# ==================== 版本检查 ====================
+# ==================== 版本比较 ====================
+version_gt() {
+    # 返回 true 如果 $1 > $2
+    [[ "$1" != "$2" && "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" == "$2" ]]
+}
+
+# ==================== 检查更新 ====================
 check_update() {
     print_step "检查版本更新..."
     
-    cd "$SKILL_DIR"
+    cd "$SKILL_DIR" 2>/dev/null || return
     
     # 获取远程最新版本
-    local REMOTE_VERSION=$(git fetch origin 2>/dev/null && git show origin/main:config.json 2>/dev/null | grep -o '"version"[^,}]*' | head -1 | cut -d'"' -f4)
+    git fetch origin 2>/dev/null || true
+    local REMOTE_VERSION=$(git show origin/main:config.json 2>/dev/null | grep -o '"version"[^,}]*' | head -1 | cut -d'"' -f4)
     
     if [[ -n "$REMOTE_VERSION" ]]; then
         echo "  当前版本: $VERSION"
         echo "  最新版本: $REMOTE_VERSION"
         
-        if [[ "$REMOTE_VERSION" != "$VERSION" ]]; then
+        if version_gt "$REMOTE_VERSION" "$VERSION"; then
             echo ""
-            echo -n "发现新版本，是否更新？[Y/n]: "
+            echo -e "${YELLOW}发现新版本！${NC}"
+            echo -n "是否更新？[Y/n]: "
             read -r UPDATE_CHOICE
             
             if [[ ! "$UPDATE_CHOICE" =~ ^[Nn] ]]; then
                 print_step "更新到最新版本..."
                 if git pull origin main 2>/dev/null; then
-                    print_success "更新成功，请重新运行脚本"
+                    print_success "更新成功！"
+                    print_info "请重新运行脚本以使用新版本"
                     exit 0
                 else
                     print_error "更新失败，请手动执行: git pull origin main"
@@ -145,7 +161,7 @@ check_update() {
     fi
 }
 
-# ==================== 依赖检查与安装 ====================
+# ==================== 依赖检查（不中断流程）====================
 
 check_dependency() {
     local DEP="$1"
@@ -153,6 +169,8 @@ check_dependency() {
         rclone) command -v rclone &> /dev/null ;;
         jq)     [[ -n "$JQ_CMD" ]] ;;
         curl)   command -v curl &> /dev/null ;;
+        git)    command -v git &> /dev/null ;;
+        python3) command -v python3 &> /dev/null ;;
         *)      command -v "$DEP" &> /dev/null ;;
     esac
 }
@@ -161,7 +179,6 @@ install_rclone() {
     print_info "安装 rclone..."
     
     local OS=$(detect_os)
-    local ARCH=$(uname -m)
     
     if [[ "$OS" == "macos" ]] && command -v brew &> /dev/null; then
         if HOMEBREW_NO_AUTO_UPDATE=1 brew install rclone 2>/dev/null; then
@@ -175,28 +192,7 @@ install_rclone() {
         return 0
     fi
     
-    case $ARCH in
-        x86_64)  ARCH="amd64" ;;
-        arm64)   ARCH="arm64" ;;
-        armv7l)  ARCH="arm" ;;
-    esac
-    
-    local OS_NAME=$(echo "$OS" | sed 's/macos/darwin/')
-    local LATEST_URL=$(curl -s https://api.github.com/repos/rclone/rclone/releases/latest 2>/dev/null | \
-        grep "browser_download_url" | grep "${OS_NAME}-${ARCH}" | head -1 | cut -d'"' -f4)
-    
-    if [[ -n "$LATEST_URL" ]]; then
-        local TMP_DIR=$(mktemp -d)
-        curl -L "$LATEST_URL" -o "$TMP_DIR/rclone.zip" 2>/dev/null
-        unzip -q "$TMP_DIR/rclone.zip" -d "$TMP_DIR"
-        sudo mv "$TMP_DIR"/rclone-*/rclone /usr/local/bin/ 2>/dev/null
-        sudo chmod +x /usr/local/bin/rclone 2>/dev/null
-        rm -rf "$TMP_DIR"
-        print_success "rclone 安装成功"
-        return 0
-    fi
-    
-    print_error "rclone 安装失败，请手动安装: https://rclone.org/install/"
+    print_warning "rclone 自动安装失败，请手动安装: https://rclone.org/install/"
     return 1
 }
 
@@ -220,19 +216,27 @@ install_jq() {
             ;;
     esac
     
-    print_error "jq 安装失败，请手动安装"
+    print_warning "jq 自动安装失败，请手动安装"
     return 1
 }
 
-ensure_dependencies() {
+check_all_dependencies() {
     print_step "检查依赖..."
-    local NEED_INSTALL=0
+    local MISSING=0
+    
+    if check_dependency git; then
+        print_success "git 已安装"
+    else
+        print_warning "git 未安装 - 部分功能受限"
+        ((MISSING++))
+    fi
     
     if check_dependency jq; then
         print_success "jq 已安装"
     else
-        print_warning "jq 未安装"
-        install_jq || ((NEED_INSTALL++))
+        print_warning "jq 未安装 - 尝试安装..."
+        install_jq || true
+        # 重新检测
         if [[ -x "/usr/local/bin/jq" ]]; then
             JQ_CMD="/usr/local/bin/jq"
         elif [[ -x "/opt/homebrew/bin/jq" ]]; then
@@ -245,18 +249,29 @@ ensure_dependencies() {
     if check_dependency rclone; then
         print_success "rclone 已安装"
     else
-        print_warning "rclone 未安装"
-        install_rclone || ((NEED_INSTALL++))
+        print_warning "rclone 未安装 - 尝试安装..."
+        install_rclone || true
     fi
     
     if check_dependency curl; then
         print_success "curl 已安装"
     else
-        print_error "curl 未安装（通常系统自带）"
-        ((NEED_INSTALL++))
+        print_warning "curl 未安装 - 部分功能受限"
+        ((MISSING++))
     fi
     
-    return $NEED_INSTALL
+    if check_dependency python3; then
+        print_success "python3 已安装"
+    else
+        print_warning "python3 未安装 - 对话保存功能不可用"
+        ((MISSING++))
+    fi
+    
+    if [[ $MISSING -gt 0 ]]; then
+        echo ""
+        print_warning "缺少 $MISSING 个依赖，部分功能可能受限"
+        print_info "继续运行..."
+    fi
 }
 
 # ==================== 配置管理 ====================
@@ -266,8 +281,8 @@ do_config() {
     echo ""
     
     local CURRENT_ROOT="" CURRENT_PORT=8080
-    local CURRENT_NAME="Assistant" CURRENT_HOST="" CURRENT_MODE="local"
-    local CURRENT_SAVEMODE="manual"
+    local CURRENT_NAME="管理者" CURRENT_HOST="" CURRENT_MODE="local"
+    local CURRENT_SAVEMODE="auto"
     
     if [[ -f "$CONFIG_FILE" ]]; then
         CURRENT_ROOT=$(read_config '.obsidianRoot')
@@ -320,7 +335,7 @@ do_config() {
     echo ""
     echo -e "${YELLOW}5. 保存机制${NC}"
     echo "   1) 手动 - 需要用户说'存入本地目录'才保存"
-    echo "   2) 自动 - 自动保存所有对话（无需用户提示）"
+    echo "   2) 自动 - 自动保存所有对话（推荐）"
     echo -e "   当前: $CURRENT_SAVEMODE"
     echo -n "   请选择 [1/2, 回车保留当前]: "
     read -r SAVEMODE_CHOICE
@@ -328,7 +343,7 @@ do_config() {
     case "$SAVEMODE_CHOICE" in
         1) SAVE_MODE="manual" ;;
         2) SAVE_MODE="auto" ;;
-        *)  SAVE_MODE=${CURRENT_SAVEMODE:-"manual"} ;;
+        *)  SAVE_MODE=${CURRENT_SAVEMODE:-"auto"} ;;
     esac
     
     # 运行模式
@@ -357,7 +372,7 @@ do_config() {
     local AUTO_START="false"
     if [[ "$MODE" == "local" ]]; then
         echo ""
-        echo -e "${YELLOW}7. 开机自动启动 WebDAV 服务？${NC}"
+        echo -e "${YELLOW}7. 开机自动启动服务？${NC}"
         echo -n "   [Y/n]: "
         read -r AUTO_CHOICE
         [[ ! "$AUTO_CHOICE" =~ ^[Nn] ]] && AUTO_START="true"
@@ -492,7 +507,7 @@ EOF
 
 start_webdav() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        print_error "请先配置"
+        print_warning "请先配置"
         return 1
     fi
     
@@ -557,225 +572,6 @@ status_webdav() {
     fi
 }
 
-# ==================== 安装/卸载 ====================
-
-do_install() {
-    print_header
-    
-    # 检查版本更新
-    check_update
-    
-    # 检查是否已安装
-    if [[ -f "$CONFIG_FILE" ]]; then
-        print_info "检测到已有配置"
-        echo ""
-        echo "当前配置："
-        local ROOT=$(read_config '.obsidianRoot')
-        local NAME=$(read_config '.agent.name')
-        local HOST=$(read_config '.agent.host')
-        local SAVE_MODE=$(read_config '.saveMode')
-        local CFG_VERSION=$(read_config '.version')
-        echo "  配置版本: ${CFG_VERSION:-未知}"
-        echo "  对话目录: $ROOT/${NAME}@${HOST}"
-        echo "  保存机制: $SAVE_MODE"
-        echo ""
-        echo -n "是否重新配置？[y/N]: "
-        read -r RECONFIG
-        if [[ ! "$RECONFIG" =~ ^[Yy] ]]; then
-            print_info "保留现有配置"
-            if [[ -f "$PID_FILE" ]] && ps -p $(cat "$PID_FILE") > /dev/null 2>&1; then
-                print_success "服务已运行"
-            else
-                print_step "启动服务..."
-                start_webdav
-            fi
-            return 0
-        fi
-    fi
-    
-    print_step "开始安装..."
-    echo ""
-    
-    ensure_dependencies || print_warning "部分依赖安装失败，继续..."
-    
-    do_config || { print_error "配置失败"; return 1; }
-    
-    print_step "创建目录..."
-    mkdir -p "$CACHE_DIR" "$LOG_DIR"
-    local ROOT=$(read_config '.obsidianRoot')
-    local NAME=$(read_config '.agent.name')
-    local HOST=$(read_config '.agent.host')
-    
-    local AGENT_DIR="$ROOT/${NAME}@${HOST}"
-    if [[ -d "$AGENT_DIR" ]]; then
-        print_info "目录已存在: $AGENT_DIR"
-    else
-        mkdir -p "$AGENT_DIR"
-        print_success "目录已创建: $AGENT_DIR"
-    fi
-    
-    local AUTO=$(read_config '.autoStart')
-    [[ "$AUTO" == "true" ]] && setup_autostart "true"
-    
-    print_step "启动服务..."
-    start_webdav
-    
-    local SAVE_MODE=$(read_config '.saveMode')
-    
-    echo ""
-    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║${NC}  ${BOLD}安装完成！技能已激活${NC}                  ${GREEN}║${NC}"
-    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
-    echo ""
-    echo "  版本: $VERSION"
-    echo "  配置文件: $CONFIG_FILE"
-    echo "  对话目录: $ROOT/${NAME}@${HOST}"
-    echo "  保存机制: $SAVE_MODE"
-    if [[ "$SAVE_MODE" == "manual" ]]; then
-        echo ""
-        echo "  使用方法：对话中说 '存入本地目录' 或 '保存对话'"
-    else
-        echo ""
-        echo "  自动保存已开启，所有对话将自动保存"
-    fi
-    echo ""
-    echo "  修改配置: bash scripts/manage.sh config"
-    echo "  检查更新: bash scripts/manage.sh update"
-    echo ""
-}
-
-do_uninstall() {
-    print_header
-    print_step "开始卸载..."
-    echo ""
-    
-    stop_webdav
-    setup_autostart "false"
-    
-    if [[ -f "$CONFIG_FILE" ]]; then
-        local ROOT=$(read_config '.obsidianRoot')
-        local NAME=$(read_config '.agent.name')
-        local HOST=$(read_config '.agent.host')
-        local AGENT_DIR="$ROOT/${NAME}@${HOST}"
-        
-        if [[ -d "$AGENT_DIR" ]]; then
-            echo ""
-            print_warning "发现对话目录: $AGENT_DIR"
-            echo -n "是否删除？[y/N]: "
-            read -r DEL
-            [[ "$DEL" =~ ^[Yy] ]] && rm -rf "$AGENT_DIR" && print_success "对话目录已删除"
-        fi
-    fi
-    
-    echo ""
-    echo -n "确认删除技能目录？[y/N]: "
-    read -r CONFIRM
-    if [[ "$CONFIRM" =~ ^[Yy] ]]; then
-        rm -rf "$SKILL_DIR"
-        print_success "卸载完成"
-    else
-        print_info "已取消"
-    fi
-}
-
-# ==================== 状态检查 ====================
-
-do_status() {
-    print_header
-    
-    echo -e "${BOLD}技能状态${NC}"
-    echo "────────────────────────────────────"
-    
-    if [[ -f "$CONFIG_FILE" ]]; then
-        local ROOT=$(read_config '.obsidianRoot')
-        local NAME=$(read_config '.agent.name')
-        local HOST=$(read_config '.agent.host')
-        local SAVE_MODE=$(read_config '.saveMode')
-        local CFG_VERSION=$(read_config '.version')
-        echo -e "配置文件: ${GREEN}已配置${NC}"
-        echo "  版本: ${CFG_VERSION:-未知}"
-        echo "  Obsidian: $ROOT"
-        echo "  对话目录: $ROOT/${NAME}@${HOST}"
-        echo "  代理: ${NAME}@${HOST}"
-        echo "  保存机制: $SAVE_MODE"
-        echo "  模式: $(read_config '.mode')"
-    else
-        echo -e "配置文件: ${YELLOW}未配置${NC}"
-    fi
-    
-    echo ""
-    echo -e "WebDAV 服务:"
-    status_webdav
-    
-    echo ""
-    echo -e "自动保存监控:"
-    status_monitor
-    
-    echo ""
-    echo -e "依赖:"
-    check_dependency rclone && echo -e "  rclone: ${GREEN}已安装${NC}" || echo -e "  rclone: ${RED}未安装${NC}"
-    check_dependency jq && echo -e "  jq: ${GREEN}已安装${NC}" || echo -e "  jq: ${RED}未安装${NC}"
-    check_dependency curl && echo -e "  curl: ${GREEN}已安装${NC}" || echo -e "  curl: ${RED}未安装${NC}"
-    command -v python3 &> /dev/null && echo -e "  python3: ${GREEN}已安装${NC}" || echo -e "  python3: ${RED}未安装${NC}"
-}
-
-# ==================== 更新日志 ====================
-
-show_changelog() {
-    print_header
-    echo -e "${BOLD}版本更新日志${NC}"
-    echo "────────────────────────────────────"
-    echo "$CHANGELOG"
-}
-
-# ==================== 主菜单 ====================
-
-show_menu() {
-    print_header
-    
-    echo -e "${BOLD}请选择操作：${NC}"
-    echo ""
-    echo "  1) 安装/重新安装    - 安装依赖、配置、激活"
-    echo "  2) 修改配置        - 更改设置"
-    echo "  3) 启动服务        - 启动 WebDAV + 自动监控"
-    echo "  4) 停止服务        - 停止所有服务"
-    echo "  5) 查看状态        - 查看配置和服务状态"
-    echo "  6) 立即保存        - 保存当前对话"
-    echo "  7) 查看已保存      - 查看已保存的对话列表"
-    echo "  8) 检查更新        - 检查并更新到最新版本"
-    echo "  9) 更新日志        - 查看版本更新记录"
-    echo "  0) 卸载            - 移除技能和数据"
-    echo "  q) 退出"
-    echo ""
-    echo -n "请输入选项: "
-}
-
-main_menu() {
-    while true; do
-        show_menu
-        read -r CHOICE
-        
-        case "$CHOICE" in
-            1) do_install ;;
-            2) do_config && { stop_webdav; start_webdav; } ;;
-            3) start_webdav; start_monitor ;;
-            4) stop_webdav; stop_monitor ;;
-            5) do_status ;;
-            6) save_now ;;
-            7) show_saved ;;
-            8) check_update ;;
-            9) show_changelog ;;
-            0) do_uninstall; return ;;
-            q|Q) echo ""; print_info "再见"; exit 0 ;;
-            *) print_warning "无效选项" ;;
-        esac
-        
-        echo ""
-        echo -n "按回车继续..."
-        read -r
-    done
-}
-
 # ==================== 对话保存功能 ====================
 
 # 运行 Python 解析器
@@ -789,7 +585,7 @@ run_parser() {
     elif command -v python &> /dev/null; then
         PYTHON_CMD="python"
     else
-        print_error "Python 未安装"
+        print_error "Python 未安装，对话保存功能不可用"
         return 1
     fi
     
@@ -802,29 +598,25 @@ save_now() {
     print_step "保存对话..."
     
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        print_error "请先配置"
+        print_warning "请先配置"
         return 1
     fi
     
-    local SAVE_MODE=$(read_config '.saveMode')
-    
-    # 运行自动保存
     run_parser "--auto"
-    
     return $?
 }
 
 # 启动监控服务
 start_monitor() {
     if [[ ! -f "$CONFIG_FILE" ]]; then
-        print_error "请先配置"
+        print_warning "请先配置"
         return 1
     fi
     
     local SAVE_MODE=$(read_config '.saveMode')
     if [[ "$SAVE_MODE" != "auto" ]]; then
         print_warning "当前为手动模式，无需启动监控"
-        print_info "如需自动保存，请运行 config 修改保存机制"
+        print_info "如需自动保存，请选择菜单中的'修改配置'"
         return 0
     fi
     
@@ -850,10 +642,8 @@ log() {
 log "Monitor started"
 
 while true; do
-    # 每 60 秒检查一次
     sleep 60
     
-    # 运行自动保存
     if command -v python3 &> /dev/null; then
         cd "$SKILL_DIR"
         python3 lib/session_parser.py --auto >> "$LOG_FILE" 2>&1
@@ -862,7 +652,6 @@ done
 MONITOR_EOF
     chmod +x "$MONITOR_SCRIPT"
     
-    # 后台运行
     nohup "$MONITOR_SCRIPT" > "$LOG_DIR/monitor.log" 2>&1 &
     echo $! > "$MONITOR_PID_FILE"
     
@@ -927,7 +716,7 @@ show_saved() {
     local HOST=$(read_config '.agent.host')
     
     if [[ -z "$ROOT" || "$ROOT" == "null" ]]; then
-        print_error "请先配置"
+        print_warning "请先配置"
         return 1
     fi
     
@@ -941,19 +730,242 @@ show_saved() {
     print_step "已保存的对话:"
     echo ""
     
-    # 按日期显示
     find "$AGENT_DIR" -type d -mindepth 1 -maxdepth 1 | sort -r | while read DATE_DIR; do
         local DATE_NAME=$(basename "$DATE_DIR")
         echo -e "${CYAN}$DATE_NAME${NC}"
         
         find "$DATE_DIR" -name "*.md" -type f | while read MD_FILE; do
             local FILENAME=$(basename "$MD_FILE" .md)
-            # 移除时间戳前缀和 session id 后缀
             local TOPIC=$(echo "$FILENAME" | sed -E 's/^[0-9]+\+//' | sed -E 's/_[a-f0-9]{6,8}$//')
             local SIZE=$(ls -lh "$MD_FILE" | awk '{print $5}')
             echo "  └─ $TOPIC ($SIZE)"
         done
         echo ""
+    done
+}
+
+# ==================== 安装/卸载 ====================
+
+do_install() {
+    print_header
+    
+    # 检查版本更新
+    if [[ -d "$SKILL_DIR/.git" ]]; then
+        check_update
+    fi
+    
+    # 检查是否已配置
+    if [[ -f "$CONFIG_FILE" ]]; then
+        print_info "检测到已有配置"
+        echo ""
+        echo "当前配置："
+        local ROOT=$(read_config '.obsidianRoot')
+        local NAME=$(read_config '.agent.name')
+        local HOST=$(read_config '.agent.host')
+        local SAVE_MODE=$(read_config '.saveMode')
+        local CFG_VERSION=$(read_config '.version')
+        echo "  配置版本: ${CFG_VERSION:-未知}"
+        echo "  对话目录: $ROOT/${NAME}@${HOST}"
+        echo "  保存机制: $SAVE_MODE"
+        echo ""
+        echo -n "是否重新配置？[y/N]: "
+        read -r RECONFIG
+        if [[ ! "$RECONFIG" =~ ^[Yy] ]]; then
+            print_info "保留现有配置"
+            if [[ -f "$PID_FILE" ]] && ps -p $(cat "$PID_FILE") > /dev/null 2>&1; then
+                print_success "服务已运行"
+            else
+                print_step "启动服务..."
+                start_webdav
+                local SAVE_MODE=$(read_config '.saveMode')
+                [[ "$SAVE_MODE" == "auto" ]] && start_monitor
+            fi
+            return 0
+        fi
+    fi
+    
+    print_step "开始安装..."
+    echo ""
+    
+    check_all_dependencies
+    
+    do_config || { print_warning "配置取消"; return 1; }
+    
+    print_step "创建目录..."
+    mkdir -p "$CACHE_DIR" "$LOG_DIR"
+    local ROOT=$(read_config '.obsidianRoot')
+    local NAME=$(read_config '.agent.name')
+    local HOST=$(read_config '.agent.host')
+    
+    local AGENT_DIR="$ROOT/${NAME}@${HOST}"
+    if [[ -d "$AGENT_DIR" ]]; then
+        print_info "目录已存在: $AGENT_DIR"
+    else
+        mkdir -p "$AGENT_DIR"
+        print_success "目录已创建: $AGENT_DIR"
+    fi
+    
+    local AUTO=$(read_config '.autoStart')
+    [[ "$AUTO" == "true" ]] && setup_autostart "true"
+    
+    print_step "启动服务..."
+    start_webdav
+    
+    local SAVE_MODE=$(read_config '.saveMode')
+    [[ "$SAVE_MODE" == "auto" ]] && start_monitor
+    
+    echo ""
+    echo -e "${GREEN}╔════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║${NC}  ${BOLD}安装完成！技能已激活${NC}                  ${GREEN}║${NC}"
+    echo -e "${GREEN}╚════════════════════════════════════════╝${NC}"
+    echo ""
+    echo "  版本: $VERSION"
+    echo "  配置文件: $CONFIG_FILE"
+    echo "  对话目录: $ROOT/${NAME}@${HOST}"
+    echo "  保存机制: $SAVE_MODE"
+    if [[ "$SAVE_MODE" == "manual" ]]; then
+        echo ""
+        echo "  使用方法：对话中说 '存入本地目录' 或 '保存对话'"
+    else
+        echo ""
+        echo "  自动保存已开启，所有对话将自动保存"
+    fi
+    echo ""
+    echo "  修改配置: bash scripts/manage.sh config"
+    echo "  检查更新: bash scripts/manage.sh update"
+    echo ""
+}
+
+do_uninstall() {
+    print_header
+    print_step "开始卸载..."
+    echo ""
+    
+    stop_monitor
+    stop_webdav
+    setup_autostart "false"
+    
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local ROOT=$(read_config '.obsidianRoot')
+        local NAME=$(read_config '.agent.name')
+        local HOST=$(read_config '.agent.host')
+        local AGENT_DIR="$ROOT/${NAME}@${HOST}"
+        
+        if [[ -d "$AGENT_DIR" ]]; then
+            echo ""
+            print_warning "发现对话目录: $AGENT_DIR"
+            echo -n "是否删除？[y/N]: "
+            read -r DEL
+            [[ "$DEL" =~ ^[Yy] ]] && rm -rf "$AGENT_DIR" && print_success "对话目录已删除"
+        fi
+    fi
+    
+    echo ""
+    echo -n "确认删除技能目录？[y/N]: "
+    read -r CONFIRM
+    if [[ "$CONFIRM" =~ ^[Yy] ]]; then
+        rm -rf "$SKILL_DIR"
+        print_success "卸载完成"
+    else
+        print_info "已取消"
+    fi
+}
+
+# ==================== 状态检查 ====================
+
+do_status() {
+    print_header
+    
+    echo -e "${BOLD}技能状态${NC}"
+    echo "────────────────────────────────────"
+    
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local ROOT=$(read_config '.obsidianRoot')
+        local NAME=$(read_config '.agent.name')
+        local HOST=$(read_config '.agent.host')
+        local SAVE_MODE=$(read_config '.saveMode')
+        local CFG_VERSION=$(read_config '.version')
+        echo -e "配置文件: ${GREEN}已配置${NC}"
+        echo "  版本: ${CFG_VERSION:-未知}"
+        echo "  Obsidian: $ROOT"
+        echo "  对话目录: $ROOT/${NAME}@${HOST}"
+        echo "  代理: ${NAME}@${HOST}"
+        echo "  保存机制: $SAVE_MODE"
+        echo "  模式: $(read_config '.mode')"
+    else
+        echo -e "配置文件: ${YELLOW}未配置${NC}"
+    fi
+    
+    echo ""
+    echo -e "WebDAV 服务:"
+    status_webdav
+    
+    echo ""
+    echo -e "自动保存监控:"
+    status_monitor
+    
+    echo ""
+    echo -e "依赖:"
+    check_dependency rclone && echo -e "  rclone: ${GREEN}已安装${NC}" || echo -e "  rclone: ${YELLOW}未安装${NC}"
+    check_dependency jq && echo -e "  jq: ${GREEN}已安装${NC}" || echo -e "  jq: ${YELLOW}未安装${NC}"
+    check_dependency curl && echo -e "  curl: ${GREEN}已安装${NC}" || echo -e "  curl: ${YELLOW}未安装${NC}"
+    check_dependency python3 && echo -e "  python3: ${GREEN}已安装${NC}" || echo -e "  python3: ${RED}未安装${NC}"
+}
+
+# ==================== 更新日志 ====================
+
+show_changelog() {
+    print_header
+    echo -e "${BOLD}版本更新日志${NC}"
+    echo "────────────────────────────────────"
+    echo "$CHANGELOG"
+}
+
+# ==================== 主菜单 ====================
+
+show_menu() {
+    print_header
+    
+    echo -e "${BOLD}请选择操作：${NC}"
+    echo ""
+    echo "  1) 安装/重新安装    - 安装依赖、配置、激活"
+    echo "  2) 修改配置        - 更改设置"
+    echo "  3) 启动服务        - 启动 WebDAV + 自动监控"
+    echo "  4) 停止服务        - 停止所有服务"
+    echo "  5) 查看状态        - 查看配置和服务状态"
+    echo "  6) 立即保存        - 保存当前对话"
+    echo "  7) 查看已保存      - 查看已保存的对话列表"
+    echo "  8) 检查更新        - 检查并更新到最新版本"
+    echo "  9) 更新日志        - 查看版本更新记录"
+    echo "  0) 卸载            - 移除技能和数据"
+    echo "  q) 退出"
+    echo ""
+    echo -n "请输入选项: "
+}
+
+main_menu() {
+    while true; do
+        show_menu
+        read -r CHOICE
+        
+        case "$CHOICE" in
+            1) do_install ;;
+            2) do_config && { stop_webdav; start_webdav; } ;;
+            3) start_webdav; start_monitor ;;
+            4) stop_webdav; stop_monitor ;;
+            5) do_status ;;
+            6) save_now ;;
+            7) show_saved ;;
+            8) check_update ;;
+            9) show_changelog ;;
+            0) do_uninstall; return ;;
+            q|Q) echo ""; print_info "再见"; exit 0 ;;
+            *) print_warning "无效选项" ;;
+        esac
+        
+        echo ""
+        echo -n "按回车继续..."
+        read -r
     done
 }
 
@@ -964,12 +976,11 @@ case "${1:-}" in
     uninstall)      do_uninstall ;;
     config)         do_config && { stop_webdav; start_webdav; } ;;
     status)         do_status ;;
-    start)          start_webdav ;;
+    start)          start_webdav; start_monitor ;;
     stop)           stop_webdav; stop_monitor ;;
     update)         check_update ;;
     changelog)      show_changelog ;;
     
-    # 新增命令
     save-now)       save_now ;;
     save)           save_now ;;
     start-monitor)  start_monitor ;;
@@ -980,7 +991,6 @@ case "${1:-}" in
     
     _start_service) 
         start_webdav
-        # 如果配置了自动保存，也启动监控
         local SAVE_MODE=$(read_config '.saveMode')
         [[ "$SAVE_MODE" == "auto" ]] && start_monitor
         ;;
@@ -991,20 +1001,15 @@ case "${1:-}" in
         echo "用法: $0 [命令]"
         echo ""
         echo "命令:"
+        echo "  (无参数)        进入交互菜单"
         echo "  install        安装/重新安装"
         echo "  config         修改配置"
-        echo "  start          启动 WebDAV 服务"
-        echo "  stop           停止所有服务"
+        echo "  start          启动服务"
+        echo "  stop           停止服务"
         echo "  status         查看状态"
         echo "  save-now       立即保存对话"
-        echo "  start-monitor  启动自动监控（auto 模式）"
-        echo "  stop-monitor   停止自动监控"
         echo "  saved          查看已保存的对话"
-        echo "  reset-state    重置保存状态"
         echo "  update         检查更新"
-        echo "  changelog      查看更新日志"
         echo "  uninstall      卸载"
-        echo ""
-        echo "无参数运行进入交互菜单"
         ;;
 esac

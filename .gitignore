@@ -6,6 +6,7 @@ logs/
 
 # PID 文件
 .webdav.pid
+.monitor.pid
 
 # macOS
 .DS_Store
