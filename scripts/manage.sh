@@ -9,10 +9,18 @@
 # ============================================================
 
 # ==================== 版本信息 ====================
-VERSION="2.4.0"
+VERSION="2.5.0"
 RELEASE_DATE="2026-03-17"
 
 CHANGELOG="
+v2.5.0 (2026-03-17)
+  - 优化配置流程：
+    - 分两步引导：先指定 Obsidian 基础目录，再指定保存目录名
+    - 自动检测 Obsidian 库目录
+    - 支持自定义保存目录名（如 11clawrecord）
+  - 配置时自动创建软链接
+  - 改进配置确认信息显示
+
 v2.4.0 (2026-03-17)
   - 新增软链接管理功能：
     - claw-对话/ 对话历史目录
@@ -298,7 +306,7 @@ do_config() {
     
     local CURRENT_ROOT="" CURRENT_PORT=8080
     local CURRENT_NAME="管理者" CURRENT_HOST="" CURRENT_MODE="local"
-    local CURRENT_SAVEMODE="auto"
+    local CURRENT_SAVEMODE="auto" CURRENT_SAVE_DIR=""
     
     if [[ -f "$CONFIG_FILE" ]]; then
         CURRENT_ROOT=$(read_config '.obsidianRoot')
@@ -307,31 +315,92 @@ do_config() {
         CURRENT_HOST=$(read_config '.agent.host')
         CURRENT_MODE=$(read_config '.mode')
         CURRENT_SAVEMODE=$(read_config '.saveMode')
+        CURRENT_SAVE_DIR=$(read_config '.saveDir')
     fi
     
-    # Obsidian 路径
-    echo -e "${YELLOW}1. Obsidian 笔记库路径${NC}"
-    [[ -n "$CURRENT_ROOT" && "$CURRENT_ROOT" != "null" ]] && echo -e "   当前: $CURRENT_ROOT"
-    echo -n "   请输入路径: "
-    read -r OBSIDIAN_ROOT
-    OBSIDIAN_ROOT=${OBSIDIAN_ROOT:-$CURRENT_ROOT}
-    
-    if [[ -z "$OBSIDIAN_ROOT" || "$OBSIDIAN_ROOT" == "null" ]]; then
-        print_error "路径不能为空"
-        return 1
-    fi
-    
-    # WebDAV 端口
+    # ========== 第一步：Obsidian 基础目录 ==========
+    echo -e "${BOLD}【第一步】Obsidian 基础目录${NC}"
     echo ""
-    echo -e "${YELLOW}2. WebDAV 服务端口${NC}"
-    echo -e "   当前: $CURRENT_PORT"
-    echo -n "   请输入 [回车保留当前]: "
-    read -r WEBDAV_PORT
-    WEBDAV_PORT=${WEBDAV_PORT:-$CURRENT_PORT}
+    echo "请指定 Obsidian 笔记库的基础目录（库目录）"
+    echo "示例: /Users/yeji/Library/Mobile Documents/iCloud~md~obsidian/Documents/YejiNote"
+    echo ""
+    
+    # 尝试自动检测
+    local DETECTED_ROOT=""
+    if [[ -d "$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents" ]]; then
+        DETECTED_ROOT="$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents"
+    fi
+    
+    if [[ -n "$CURRENT_ROOT" && "$CURRENT_ROOT" != "null" ]]; then
+        echo -e "   当前配置: ${GREEN}$CURRENT_ROOT${NC}"
+    elif [[ -n "$DETECTED_ROOT" ]]; then
+        echo -e "   检测到: ${CYAN}$DETECTED_ROOT${NC}"
+    fi
+    
+    echo ""
+    echo -n "请输入 Obsidian 基础目录路径 [回车使用检测值]: "
+    read -r OBSIDIAN_BASE
+    
+    # 如果用户没有输入，使用检测值或当前值
+    if [[ -z "$OBSIDIAN_BASE" ]]; then
+        if [[ -n "$CURRENT_ROOT" && "$CURRENT_ROOT" != "null" ]]; then
+            # 从当前路径提取基础目录
+            OBSIDIAN_BASE=$(dirname "$CURRENT_ROOT")
+        elif [[ -n "$DETECTED_ROOT" ]]; then
+            OBSIDIAN_BASE="$DETECTED_ROOT"
+        else
+            print_error "路径不能为空"
+            return 1
+        fi
+    fi
+    
+    # 验证目录是否存在
+    if [[ ! -d "$OBSIDIAN_BASE" ]]; then
+        print_warning "目录不存在: $OBSIDIAN_BASE"
+        echo -n "是否创建？[Y/n]: "
+        read -r CREATE_DIR
+        if [[ ! "$CREATE_DIR" =~ ^[Nn] ]]; then
+            mkdir -p "$OBSIDIAN_BASE"
+        else
+            print_error "请指定一个有效的目录"
+            return 1
+        fi
+    fi
+    
+    # ========== 第二步：保存目录名 ==========
+    echo ""
+    echo -e "${BOLD}【第二步】对话保存目录名${NC}"
+    echo ""
+    echo "请指定保存对话的目录名称（将在 Obsidian 基础目录下创建）"
+    echo ""
+    
+    # 从当前配置提取保存目录名
+    local CURRENT_DIR_NAME="00clawrecord"
+    if [[ -n "$CURRENT_SAVE_DIR" && "$CURRENT_SAVE_DIR" != "null" ]]; then
+        CURRENT_DIR_NAME="$CURRENT_SAVE_DIR"
+    elif [[ -n "$CURRENT_ROOT" && "$CURRENT_ROOT" != "null" ]]; then
+        CURRENT_DIR_NAME=$(basename "$CURRENT_ROOT")
+    fi
+    
+    echo -e "   当前: ${GREEN}$CURRENT_DIR_NAME${NC}"
+    echo ""
+    echo -n "请输入目录名 [回车保留当前]: "
+    read -r SAVE_DIR_NAME
+    SAVE_DIR_NAME=${SAVE_DIR_NAME:-$CURRENT_DIR_NAME}
+    
+    # 构建完整路径
+    OBSIDIAN_ROOT="$OBSIDIAN_BASE/$SAVE_DIR_NAME"
+    
+    echo ""
+    echo -e "   完整路径: ${CYAN}$OBSIDIAN_ROOT${NC}"
+    
+    # ========== 第三步：代理配置 ==========
+    echo ""
+    echo -e "${BOLD}【第三步】代理配置${NC}"
+    echo ""
     
     # 代理名
-    echo ""
-    echo -e "${YELLOW}3. 代理名称${NC}"
+    echo -e "${YELLOW}代理名称${NC}"
     echo -e "   当前: $CURRENT_NAME"
     echo -n "   请输入 [回车保留当前]: "
     read -r AGENT_NAME
@@ -341,18 +410,20 @@ do_config() {
     local DEFAULT_HOST=$(hostname | sed 's/.local$//')
     [[ -n "$CURRENT_HOST" && "$CURRENT_HOST" != "null" ]] && DEFAULT_HOST="$CURRENT_HOST"
     echo ""
-    echo -e "${YELLOW}4. 主机名称${NC}"
+    echo -e "${YELLOW}主机名称${NC}"
     echo -e "   当前: $DEFAULT_HOST"
     echo -n "   请输入 [回车保留当前]: "
     read -r AGENT_HOST
     AGENT_HOST=${AGENT_HOST:-$DEFAULT_HOST}
     
-    # 保存机制
+    # ========== 第四步：保存机制 ==========
     echo ""
-    echo -e "${YELLOW}5. 保存机制${NC}"
+    echo -e "${BOLD}【第四步】保存机制${NC}"
+    echo ""
     echo "   1) 手动 - 需要用户说'存入本地目录'才保存"
     echo "   2) 自动 - 自动保存所有对话（推荐）"
     echo -e "   当前: $CURRENT_SAVEMODE"
+    echo ""
     echo -n "   请选择 [1/2, 回车保留当前]: "
     read -r SAVEMODE_CHOICE
     
@@ -362,12 +433,14 @@ do_config() {
         *)  SAVE_MODE=${CURRENT_SAVEMODE:-"auto"} ;;
     esac
     
-    # 运行模式
+    # ========== 第五步：运行模式 ==========
     echo ""
-    echo -e "${YELLOW}6. 运行模式${NC}"
+    echo -e "${BOLD}【第五步】运行模式${NC}"
+    echo ""
     echo "   1) 本地模式 (本机运行 WebDAV 服务)"
     echo "   2) 远程模式 (连接其他主机的 WebDAV)"
     echo -e "   当前: $CURRENT_MODE"
+    echo ""
     echo -n "   请选择 [1/2, 回车保留当前]: "
     read -r MODE_CHOICE
     
@@ -384,29 +457,55 @@ do_config() {
             ;;
     esac
     
+    # ========== 第六步：软链接设置 ==========
+    echo ""
+    echo -e "${BOLD}【第六步】软链接设置${NC}"
+    echo ""
+    echo "是否创建以下软链接？"
+    echo "  • claw-配置/管理者 → ~/.openclaw/workspace/"
+    echo "  • claw-工作区/shared → ~/agents/shared/"
+    echo ""
+    echo -n "创建软链接？[Y/n]: "
+    read -r LINKS_CHOICE
+    local LINKS_ENABLED="true"
+    [[ "$LINKS_CHOICE" =~ ^[Nn] ]] && LINKS_ENABLED="false"
+    
+    # WebDAV 端口
+    echo ""
+    echo -e "${YELLOW}WebDAV 服务端口${NC}"
+    echo -e "   当前: $CURRENT_PORT"
+    echo -n "   请输入 [回车保留当前]: "
+    read -r WEBDAV_PORT
+    WEBDAV_PORT=${WEBDAV_PORT:-$CURRENT_PORT}
+    
     # 开机自启
     local AUTO_START="false"
     if [[ "$MODE" == "local" ]]; then
         echo ""
-        echo -e "${YELLOW}7. 开机自动启动服务？${NC}"
+        echo -e "${YELLOW}开机自动启动服务？${NC}"
         echo -n "   [Y/n]: "
         read -r AUTO_CHOICE
         [[ ! "$AUTO_CHOICE" =~ ^[Nn] ]] && AUTO_START="true"
     fi
     
-    # 确认
+    # ========== 确认 ==========
     echo ""
     echo -e "${BOLD}========== 配置确认 ==========${NC}"
-    echo "  Obsidian 路径: $OBSIDIAN_ROOT"
-    echo "  对话目录: $OBSIDIAN_ROOT/${AGENT_NAME}@${AGENT_HOST}"
-    echo "  WebDAV 端口: $WEBDAV_PORT"
+    echo ""
+    echo "  Obsidian 基础目录: $OBSIDIAN_BASE"
+    echo "  保存目录名: $SAVE_DIR_NAME"
+    echo "  完整路径: $OBSIDIAN_ROOT"
+    echo ""
+    echo "  对话保存位置: $OBSIDIAN_ROOT/claw-对话/${AGENT_NAME}@${AGENT_HOST}/"
+    echo "  配置文件链接: $OBSIDIAN_ROOT/claw-配置/${AGENT_NAME}/"
+    echo "  工作区链接: $OBSIDIAN_ROOT/claw-工作区/shared/"
+    echo ""
     echo "  代理名称: $AGENT_NAME"
     echo "  主机名称: $AGENT_HOST"
     echo "  保存机制: $SAVE_MODE"
-    [[ "$SAVE_MODE" == "manual" ]] && echo "    （需要用户说'存入本地目录'才保存）"
-    [[ "$SAVE_MODE" == "auto" ]] && echo "    （自动保存所有对话）"
     echo "  运行模式: $MODE"
-    [[ "$MODE" == "remote" ]] && echo "  远程地址: $REMOTE_URL"
+    echo "  创建软链接: $LINKS_ENABLED"
+    echo "  WebDAV 端口: $WEBDAV_PORT"
     echo "  开机自启: $AUTO_START"
     echo -e "${BOLD}==============================${NC}"
     echo ""
@@ -424,6 +523,7 @@ do_config() {
 {
   "version": "$VERSION",
   "obsidianRoot": "$OBSIDIAN_ROOT",
+  "saveDir": "$SAVE_DIR_NAME",
   "webdav": {
     "enabled": true,
     "port": $WEBDAV_PORT,
@@ -441,11 +541,42 @@ do_config() {
   "saveMode": "$SAVE_MODE",
   "mode": "$MODE",
   "remoteWebdavUrl": "$REMOTE_URL",
-  "autoStart": $AUTO_START
+  "autoStart": $AUTO_START,
+  "structure": {
+    "dialogDir": "claw-对话",
+    "configDir": "claw-配置",
+    "workspaceDir": "claw-工作区"
+  },
+  "links": {
+    "enabled": $LINKS_ENABLED,
+    "manager": {
+      "name": "$AGENT_NAME",
+      "target": "~/.openclaw/workspace"
+    },
+    "shared": {
+      "name": "shared",
+      "target": "~/agents/shared"
+    }
+  },
+  "agents": {
+    "rootDir": "~/agents",
+    "autoInit": true
+  }
 }
 EOF
     
     print_success "配置已保存"
+    
+    # 创建保存目录
+    mkdir -p "$OBSIDIAN_ROOT"
+    
+    # 如果启用软链接，创建链接
+    if [[ "$LINKS_ENABLED" == "true" ]]; then
+        echo ""
+        init_agents_structure
+        setup_links
+    fi
+    
     return 0
 }
 
