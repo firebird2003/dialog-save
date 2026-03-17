@@ -120,7 +120,10 @@ def parse_timestamp(ts) -> Optional[datetime]:
 
 
 def extract_text_content(content) -> str:
-    """从 content 数组中提取文本"""
+    """
+    从 content 数组中提取文本
+    注意：跳过 toolCall 和 thinking，只提取纯文本
+    """
     if isinstance(content, str):
         return content
     
@@ -131,40 +134,9 @@ def extract_text_content(content) -> str:
                 block_type = block.get('type', '')
                 if block_type == 'text':
                     texts.append(block.get('text', ''))
-                elif block_type == 'thinking':
-                    # 跳过 thinking 块
-                    pass
-                elif block_type == 'toolCall':
-                    # 工具调用，简化显示
-                    tool_name = block.get('name', 'unknown')
-                    texts.append(f"[调用工具: {tool_name}]")
+                # 跳过 thinking 和 toolCall，不输出
             elif isinstance(block, str):
                 texts.append(block)
-        return '\n'.join(texts)
-    
-    return ''
-
-
-def extract_tool_result_content(content) -> str:
-    """提取工具结果内容"""
-    if isinstance(content, str):
-        return content
-    
-    if isinstance(content, list):
-        texts = []
-        for block in content:
-            if isinstance(block, dict):
-                if block.get('type') == 'text':
-                    text = block.get('text', '')
-                    # 截断过长的结果
-                    if len(text) > 500:
-                        text = text[:500] + '...'
-                    texts.append(text)
-            elif isinstance(block, str):
-                if len(block) > 500:
-                    texts.append(block[:500] + '...')
-                else:
-                    texts.append(block)
         return '\n'.join(texts)
     
     return ''
@@ -174,7 +146,8 @@ def parse_session_file(session_file: Path, last_entry_id: str = None) -> list:
     """
     解析 session JSONL 文件
     
-    返回: [(entry_id, role, content, timestamp, is_tool_result), ...]
+    返回: [(entry_id, role, content, timestamp), ...]
+    注意：只返回用户消息和助理文字回复，跳过工具调用和结果
     """
     entries = []
     found_last = last_entry_id is None
@@ -208,122 +181,162 @@ def parse_session_file(session_file: Path, last_entry_id: str = None) -> list:
                 content = message.get('content', [])
                 ts = parse_timestamp(entry.get('timestamp') or message.get('timestamp'))
                 
+                # 只处理用户和助理的文字消息
                 if role == 'user':
                     text = extract_text_content(content)
                     if text:
-                        entries.append((entry_id, 'user', text, ts, False))
+                        entries.append((entry_id, 'user', text, ts))
                 
                 elif role == 'assistant':
                     text = extract_text_content(content)
                     if text:
-                        entries.append((entry_id, 'assistant', text, ts, False))
+                        entries.append((entry_id, 'assistant', text, ts))
                 
-                elif role == 'toolResult':
-                    tool_name = message.get('toolName', 'unknown')
-                    result_text = extract_tool_result_content(content)
-                    is_error = message.get('isError', False)
-                    entries.append((entry_id, 'tool_result', 
-                                  f"[{tool_name}{' ❌' if is_error else ''}]\n{result_text}", 
-                                  ts, True))
+                # 完全跳过 toolResult
     
     return entries
 
 
+def clean_user_message(content: str) -> str:
+    """清理用户消息中的 metadata"""
+    clean_content = content
+    
+    # 移除 Conversation info (untrusted metadata) 块
+    clean_content = re.sub(
+        r'Conversation info \(untrusted metadata\):\s*```json\s*.*?```\s*', 
+        '', clean_content, flags=re.DOTALL
+    )
+    
+    # 移除 Sender (untrusted metadata) 块
+    clean_content = re.sub(
+        r'Sender \(untrusted metadata\):\s*```json\s*.*?```\s*', 
+        '', clean_content, flags=re.DOTALL
+    )
+    
+    # 移除单独的代码块
+    clean_content = re.sub(r'```json\s*.*?```\s*', '', clean_content, flags=re.DOTALL)
+    clean_content = re.sub(r'```\s*.*?```\s*', '', clean_content, flags=re.DOTALL)
+    
+    # 移除时间戳标记
+    clean_content = re.sub(
+        r'\[[A-Z][a-z]{2} \d{4}-\d{2}-\d{2} \d{2}:\d{2} GMT\+8\]\s*', 
+        '', clean_content
+    )
+    
+    # 移除 message_id 标记
+    clean_content = re.sub(r'\[message_id:.*?\]\s*', '', clean_content)
+    
+    # 移除 System 指令
+    clean_content = re.sub(r'\[System:.*?\]', '', clean_content, flags=re.DOTALL)
+    
+    # 移除用户名前缀
+    clean_content = re.sub(r'^[^:\n]+:\s*', '', clean_content)
+    
+    # 清理空白
+    clean_content = clean_content.strip()
+    
+    return clean_content
+
+
+def extract_keywords(text: str, max_keywords: int = 2) -> list:
+    """
+    从文本中提取关键词
+    策略：提取核心名词和动作，简洁为主
+    """
+    # 清理文本
+    text = clean_user_message(text)
+    
+    keywords = []
+    
+    # 1. 提取冒号后的内容（通常是主题）
+    match = re.search(r'[：:]\s*([^\s，。！？,：:\n]{2,8})', text)
+    if match:
+        kw = match.group(1)
+        kw = re.sub(r'^(一个|这个|那个)', '', kw)
+        if kw and len(kw) >= 2:
+            keywords.append(kw)
+    
+    # 2. 提取"XX技能/项目/功能"格式
+    if len(keywords) < max_keywords:
+        match = re.search(r'([^\s，。！？,：:]{2,6})(技能|项目|功能)', text)
+        if match:
+            kw = match.group(0)
+            if kw not in keywords:
+                keywords.append(kw)
+    
+    # 3. 提取动作+对象
+    if len(keywords) < max_keywords:
+        match = re.search(r'(新建|创建|开发|完善|优化|修复|讨论)([^\s，。！？,：:\n]{2,6})', text)
+        if match:
+            kw = match.group(1) + match.group(2)
+            # 过滤不合适的组合（包含代词或虚词）
+            if not re.match(r'.*(一个|这个|那个|与你|与我|的是|的是你|的是我).*', kw):
+                if kw not in keywords:
+                    keywords.append(kw)
+    
+    # 4. 提取问题编号
+    match = re.search(r'问题\s*(\d+)', text)
+    if match:
+        kw = '问题' + match.group(1)
+        if kw not in keywords:
+            if len(keywords) >= max_keywords:
+                keywords[-1] = kw
+            else:
+                keywords.append(kw)
+    
+    # 5. 过滤掉太短或太抽象的关键词
+    keywords = [kw for kw in keywords if len(kw) >= 2 and not re.match(r'^[a-zA-Z0-9]{6,}$', kw)]
+    
+    # 如果没有匹配到任何关键词，取第一句前10字符
+    if not keywords:
+        first_sentence = re.split(r'[，。！？,：:\n]', text)[0].strip()
+        first_sentence = re.sub(r'^[\d.、\s]+', '', first_sentence)
+        if first_sentence:
+            if len(first_sentence) > 10:
+                first_sentence = first_sentence[:10]
+            keywords.append(first_sentence)
+    
+    return keywords[:max_keywords]
+
+
 def detect_topic(messages: list, max_len: int = 20) -> str:
-    """从消息中检测话题"""
-    # 取第一条用户消息的前面部分作为话题
-    for entry_id, role, content, ts, is_tool in messages:
-        if role == 'user' and not is_tool:
-            # 清理各种 metadata 和标记
-            clean_content = content
+    """
+    从消息中检测话题
+    格式：关键词1-关键词2（简洁）
+    """
+    for entry_id, role, content, ts in messages:
+        if role == 'user':
+            keywords = extract_keywords(content)
             
-            # 移除 Conversation info (untrusted metadata) 块（包含整个 markdown 代码块）
-            # 格式: Conversation info...\n```json\n...\n```
-            clean_content = re.sub(
-                r'Conversation info \(untrusted metadata\):\s*```json\s*.*?```\s*', 
-                '', clean_content, flags=re.DOTALL
-            )
+            if keywords:
+                topic = '-'.join(keywords)
+                if len(topic) > max_len:
+                    topic = topic[:max_len]
+                return topic
             
-            # 移除 Sender (untrusted metadata) 块
-            clean_content = re.sub(
-                r'Sender \(untrusted metadata\):\s*```json\s*.*?```\s*', 
-                '', clean_content, flags=re.DOTALL
-            )
-            
-            # 移除单独的 json 代码块
-            clean_content = re.sub(r'```json\s*.*?```\s*', '', clean_content, flags=re.DOTALL)
-            clean_content = re.sub(r'```\s*.*?```\s*', '', clean_content, flags=re.DOTALL)
-            
-            # 移除时间戳标记 [Tue 2026-03-17 14:20 GMT+8]
-            clean_content = re.sub(
-                r'\[[A-Z][a-z]{2} \d{4}-\d{2}-\d{2} \d{2}:\d{2} GMT\+8\]\s*', 
-                '', clean_content
-            )
-            
-            # 移除 message_id 标记
-            clean_content = re.sub(r'\[message_id:.*?\]\s*', '', clean_content)
-            
-            # 移除 System 指令（多行）
-            clean_content = re.sub(r'\[System:.*?\]', '', clean_content, flags=re.DOTALL)
-            
-            # 移除用户名前缀 (如 "叶骥: "，匹配到第一个冒号)
-            clean_content = re.sub(r'^[^:\n]+:\s*', '', clean_content)
-            
-            # 移除多余空白和换行
-            clean_content = re.sub(r'\n+', ' ', clean_content)
-            clean_content = re.sub(r'\s+', ' ', clean_content).strip()
-            
+            # 如果没提取到关键词，使用清理后的文本第一句
+            clean_content = clean_user_message(content)
             if clean_content:
-                # 截断到指定长度
-                if len(clean_content) > max_len:
-                    return clean_content[:max_len] + '...'
-                return clean_content
+                first_sentence = re.split(r'[，。！？,：:\n]', clean_content)[0].strip()
+                first_sentence = re.sub(r'^[\d.、\s]+', '', first_sentence)
+                if len(first_sentence) > max_len:
+                    first_sentence = first_sentence[:max_len]
+                return first_sentence
+            
     return "对话记录"
 
 
-def generate_topic_hash(messages: list) -> str:
-    """生成话题哈希，用于检测对话是否变化"""
-    content = ''.join([f"{role}:{content[:100]}" for entry_id, role, content, ts, is_tool in messages[:3]])
-    return hashlib.md5(content.encode()).hexdigest()[:8]
-
-
 def format_messages_as_markdown(messages: list, date_str: str, time_str: str) -> str:
-    """将消息格式化为 Markdown"""
+    """
+    将消息格式化为 Markdown
+    只输出用户消息和助理文字回复，不输出工具调用
+    """
     lines = [f"## {date_str} {time_str}", ""]
     
-    for entry_id, role, content, ts, is_tool in messages:
-        if is_tool:
-            # 工具结果，缩进显示
-            lines.append(f"```\n{content}\n```")
-            lines.append("")
-        elif role == 'user':
-            # 清理 metadata（使用与 detect_topic 相同的清理逻辑）
-            clean_content = content
-            
-            # 移除 Conversation info 和 Sender metadata 块
-            clean_content = re.sub(
-                r'Conversation info \(untrusted metadata\):\s*```json\s*.*?```\s*', 
-                '', clean_content, flags=re.DOTALL
-            )
-            clean_content = re.sub(
-                r'Sender \(untrusted metadata\):\s*```json\s*.*?```\s*', 
-                '', clean_content, flags=re.DOTALL
-            )
-            
-            # 移除单独的代码块
-            clean_content = re.sub(r'```json\s*.*?```\s*', '', clean_content, flags=re.DOTALL)
-            clean_content = re.sub(r'```\s*.*?```\s*', '', clean_content, flags=re.DOTALL)
-            
-            # 移除时间戳和标记
-            clean_content = re.sub(r'\[[A-Z][a-z]{2} \d{4}-\d{2}-\d{2} \d{2}:\d{2} GMT\+8\]\s*', '', clean_content)
-            clean_content = re.sub(r'\[message_id:.*?\]\s*', '', clean_content)
-            clean_content = re.sub(r'\[System:.*?\]', '', clean_content, flags=re.DOTALL)
-            
-            # 移除用户名前缀
-            clean_content = re.sub(r'^[^:\n]+:\s*', '', clean_content)
-            
-            # 清理空白
-            clean_content = clean_content.strip()
+    for entry_id, role, content, ts in messages:
+        if role == 'user':
+            # 清理 metadata
+            clean_content = clean_user_message(content)
             
             lines.append(f"**用户：**")
             lines.append(clean_content)
@@ -343,10 +356,12 @@ def save_dialog_to_markdown(
     agent_host: str,
     topic: str = None,
     project: str = None,
-    tags: list = None,
-    session_id: str = None
+    tags: list = None
 ) -> Path:
-    """保存对话到 Markdown 文件"""
+    """
+    保存对话到 Markdown 文件
+    文件名格式：YYMMDDHHMM+话题.md（移除session_id后缀）
+    """
     
     if not messages:
         return None
@@ -375,13 +390,8 @@ def save_dialog_to_markdown(
     
     date_dir.mkdir(parents=True, exist_ok=True)
     
-    # 构建文件路径 - 使用 session_id 确保唯一性
-    if session_id:
-        unique_id = session_id[:8]
-    else:
-        unique_id = hashlib.md5(f"{timestamp}{topic}".encode()).hexdigest()[:6]
-    
-    filename = f"{timestamp}+{topic_clean}_{unique_id}.md"
+    # 文件名：YYMMDDHHMM+话题.md
+    filename = f"{timestamp}+{topic_clean}.md"
     filepath = date_dir / filename
     
     # 格式化消息
@@ -511,7 +521,7 @@ def run_auto_save(
         if not messages:
             continue
         
-        # 检查消息数量，太少可能只是单条消息
+        # 检查消息数量
         user_messages = [m for m in messages if m[1] == 'user']
         assistant_messages = [m for m in messages if m[1] == 'assistant']
         
@@ -529,8 +539,7 @@ def run_auto_save(
             messages=messages,
             output_dir=output_dir,
             agent_name=agent_name,
-            agent_host=agent_host,
-            session_id=session_id
+            agent_host=agent_host
         )
         
         if saved_path:
@@ -594,7 +603,7 @@ def main():
             return
         
         # 打印消息
-        for entry_id, role, content, ts, is_tool in messages:
+        for entry_id, role, content, ts in messages:
             print(f"\n--- {role} ({ts}) ---")
             print(content[:200] + ('...' if len(content) > 200 else ''))
         return
