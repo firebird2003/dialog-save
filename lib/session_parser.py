@@ -562,30 +562,285 @@ def run_auto_save(
     return saved_files
 
 
+# ==================== 项目保存功能 ====================
+
+def get_project_dir(output_dir: Path, agent_name: str, agent_host: str, project_name: str) -> Path:
+    """
+    获取项目目录路径
+    格式：{agent}@{host}/{YYMMDD}/项目-{项目名}
+    """
+    date_short = format_date_short()
+    agent_dir = output_dir / f"{agent_name}@{agent_host}"
+    project_dir = agent_dir / date_short / f"项目-{project_name}"
+    return project_dir
+
+
+def get_next_version(project_dir: Path, topic: str) -> int:
+    """
+    获取下一个版本号
+    检查目录中已有的文件，确定版本号
+    """
+    if not project_dir.exists():
+        return 1
+    
+    # 查找匹配的文件
+    max_version = 0
+    pattern = re.compile(rf'^{re.escape(topic)}-v(\d+)\.md$')
+    
+    for f in project_dir.iterdir():
+        if f.is_file() and f.suffix == '.md':
+            match = pattern.match(f.name)
+            if match:
+                version = int(match.group(1))
+                if version > max_version:
+                    max_version = version
+    
+    return max_version + 1
+
+
+def save_project_content(
+    content: str,
+    output_dir: Path,
+    agent_name: str,
+    agent_host: str,
+    project_name: str,
+    topic: str,
+    version: int = None,
+    tags: list = None
+) -> Path:
+    """
+    保存项目成果到项目文件夹
+    
+    参数：
+        content: 内容（Markdown格式）
+        output_dir: Obsidian 根目录
+        agent_name: 代理名称
+        agent_host: 主机名称
+        project_name: 项目名称
+        topic: 主题
+        version: 版本号（None 则自动递增）
+        tags: 标签列表
+    
+    返回：
+        保存的文件路径
+    """
+    # 获取项目目录
+    project_dir = get_project_dir(output_dir, agent_name, agent_host, project_name)
+    project_dir.mkdir(parents=True, exist_ok=True)
+    
+    # 清理主题作为文件名
+    topic_clean = sanitize_filename(topic, max_len=30)
+    
+    # 确定版本号
+    if version is None:
+        version = get_next_version(project_dir, topic_clean)
+    
+    # 构建文件名
+    filename = f"{topic_clean}-v{version}.md"
+    filepath = project_dir / filename
+    
+    # 获取时间
+    dt = get_shanghai_time()
+    date_long = format_date_long(dt)
+    time_str = format_time(dt)
+    iso_time = format_iso_time(dt)
+    
+    # 格式化标签
+    if tags is None:
+        tags = ["项目成果", project_name]
+    tags_str = ', '.join([f'"{tag}"' for tag in tags])
+    
+    # 构建 frontmatter
+    frontmatter = f"""---
+date: {date_long}
+time: {time_str}
+agent: {agent_name}
+host: {agent_host}
+project: {project_name}
+topic: {topic}
+version: v{version}
+tags: [{tags_str}]
+created: {iso_time}
+updated: {iso_time}
+type: project
+---
+
+# {topic} (v{version})
+
+"""
+    
+    full_content = frontmatter + content
+    
+    # 写入文件
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(full_content)
+    
+    return filepath
+
+
+def list_projects(
+    output_dir: Path,
+    agent_name: str,
+    agent_host: str
+) -> list:
+    """
+    列出所有项目
+    """
+    agent_dir = output_dir / f"{agent_name}@{agent_host}"
+    projects = []
+    
+    if not agent_dir.exists():
+        return projects
+    
+    # 遍历日期目录
+    for date_dir in agent_dir.iterdir():
+        if not date_dir.is_dir():
+            continue
+        
+        # 遍历项目目录
+        for project_dir in date_dir.iterdir():
+            if project_dir.is_dir() and project_dir.name.startswith('项目-'):
+                project_name = project_dir.name[3:]  # 去掉"项目-"前缀
+                # 统计文件数
+                file_count = len(list(project_dir.glob('*.md')))
+                projects.append({
+                    'name': project_name,
+                    'path': str(project_dir),
+                    'date': date_dir.name,
+                    'files': file_count
+                })
+    
+    return projects
+
+
+def list_project_versions(
+    output_dir: Path,
+    agent_name: str,
+    agent_host: str,
+    project_name: str
+) -> list:
+    """
+    列出项目的所有版本
+    """
+    project_dir = get_project_dir(output_dir, agent_name, agent_host, project_name)
+    
+    if not project_dir.exists():
+        return []
+    
+    versions = []
+    for f in sorted(project_dir.glob('*.md')):
+        # 解析文件名
+        match = re.match(r'^(.+)-v(\d+)\.md$', f.name)
+        if match:
+            versions.append({
+                'topic': match.group(1),
+                'version': int(match.group(2)),
+                'path': str(f),
+                'size': f.stat().st_size,
+                'modified': datetime.fromtimestamp(f.stat().st_mtime, tz=SHANGHAI_TZ).strftime('%Y-%m-%d %H:%M')
+            })
+    
+    return versions
+
+
 def main():
     """主函数"""
     import argparse
     
     parser = argparse.ArgumentParser(description='OpenClaw Session Parser')
+    
+    # 对话保存
     parser.add_argument('--auto', action='store_true', help='运行自动保存')
     parser.add_argument('--session', type=str, help='指定 session ID')
     parser.add_argument('--session-file', type=str, help='指定 session 文件路径')
     parser.add_argument('--output', type=str, help='输出目录')
     parser.add_argument('--topic', type=str, help='话题标题')
-    parser.add_argument('--all', action='store_true', help='处理所有未保存的消息')
-    parser.add_argument('--reset', action='store_true', help='重置状态，重新处理所有消息')
+    parser.add_argument('--reset', action='store_true', help='重置状态')
+    
+    # 项目保存
+    parser.add_argument('--project-save', action='store_true', help='保存项目成果')
+    parser.add_argument('--project-name', type=str, help='项目名称')
+    parser.add_argument('--project-topic', type=str, help='项目主题')
+    parser.add_argument('--project-version', type=int, help='版本号')
+    parser.add_argument('--project-content', type=str, help='项目内容（或从 stdin 读取）')
+    parser.add_argument('--project-list', action='store_true', help='列出所有项目')
+    parser.add_argument('--project-versions', type=str, help='列出项目的所有版本')
     
     args = parser.parse_args()
     
     config = load_config()
     state = load_state()
     
+    # 重置状态
     if args.reset:
         state = {'sessions': {}}
         save_state(state)
         print("State reset complete")
         return
     
+    # 列出项目
+    if args.project_list:
+        output_dir = Path(config.get('obsidianRoot', '.'))
+        agent_name = config.get('agent', {}).get('name', 'Assistant')
+        agent_host = config.get('agent', {}).get('host', 'localhost')
+        
+        projects = list_projects(output_dir, agent_name, agent_host)
+        if projects:
+            print(f"找到 {len(projects)} 个项目:")
+            for p in projects:
+                print(f"  - {p['name']} ({p['date']}, {p['files']} 个文件)")
+        else:
+            print("暂无项目")
+        return
+    
+    # 列出项目版本
+    if args.project_versions:
+        output_dir = Path(config.get('obsidianRoot', '.'))
+        agent_name = config.get('agent', {}).get('name', 'Assistant')
+        agent_host = config.get('agent', {}).get('host', 'localhost')
+        
+        versions = list_project_versions(output_dir, agent_name, agent_host, args.project_versions)
+        if versions:
+            print(f"项目 '{args.project_versions}' 的版本:")
+            for v in versions:
+                print(f"  - v{v['version']}: {v['topic']} ({v['modified']})")
+        else:
+            print(f"项目 '{args.project_versions}' 暂无版本")
+        return
+    
+    # 保存项目成果
+    if args.project_save:
+        if not args.project_name or not args.project_topic:
+            print("错误: 需要指定 --project-name 和 --project-topic", file=sys.stderr)
+            return
+        
+        output_dir = Path(config.get('obsidianRoot', '.'))
+        agent_name = config.get('agent', {}).get('name', 'Assistant')
+        agent_host = config.get('agent', {}).get('host', 'localhost')
+        
+        # 获取内容
+        if args.project_content:
+            content = args.project_content
+        elif not sys.stdin.isatty():
+            content = sys.stdin.read()
+        else:
+            print("错误: 请通过 --project-content 或 stdin 提供内容", file=sys.stderr)
+            return
+        
+        saved_path = save_project_content(
+            content=content,
+            output_dir=output_dir,
+            agent_name=agent_name,
+            agent_host=agent_host,
+            project_name=args.project_name,
+            topic=args.project_topic,
+            version=args.project_version
+        )
+        
+        print(f"Saved: {saved_path}")
+        return
+    
+    # 自动保存对话
     if args.auto:
         saved = run_auto_save(config, state)
         if saved:
@@ -594,6 +849,7 @@ def main():
             print("No new messages to save")
         return
     
+    # 查看指定 session
     if args.session_file:
         session_file = Path(args.session_file)
         messages = parse_session_file(session_file)
@@ -602,35 +858,9 @@ def main():
             print("No messages found")
             return
         
-        # 打印消息
         for entry_id, role, content, ts in messages:
             print(f"\n--- {role} ({ts}) ---")
             print(content[:200] + ('...' if len(content) > 200 else ''))
-        return
-    
-    if args.session:
-        session_file = get_session_file_path(args.session)
-        messages = parse_session_file(session_file)
-        
-        if not messages:
-            print("No messages found")
-            return
-        
-        # 使用配置的输出目录
-        output_dir = Path(config.get('obsidianRoot', '.'))
-        agent_name = config.get('agent', {}).get('name', 'Assistant')
-        agent_host = config.get('agent', {}).get('name', 'localhost')
-        
-        saved_path = save_dialog_to_markdown(
-            messages=messages,
-            output_dir=output_dir,
-            agent_name=agent_name,
-            agent_host=agent_host,
-            topic=args.topic
-        )
-        
-        if saved_path:
-            print(f"Saved: {saved_path}")
         return
     
     # 默认：打印帮助

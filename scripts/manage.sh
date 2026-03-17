@@ -9,27 +9,27 @@
 # ============================================================
 
 # ==================== 版本信息 ====================
-VERSION="2.2.0"
+VERSION="2.3.0"
 RELEASE_DATE="2026-03-17"
 
 CHANGELOG="
+v2.3.0 (2026-03-17)
+  - 新增项目文件夹功能：保存项目成果到独立目录
+  - 新增版本化保存：文件名包含版本号，保留历史版本
+  - 区分两种保存类型：
+    - 对话保存：自动保存，格式 YYMMDDHHMM+话题.md
+    - 项目成果：手动触发，保存到项目文件夹，带版本号
+  - 新增命令：project-save, project-list, project-versions
+
 v2.2.0 (2026-03-17)
   - 改进话题提取：智能提取关键词，用 - 连接
   - 文件名简化：移除 session_id 后缀
   - 内容清理：移除工具调用和结果，只保留文字对话
-  - 更简洁的文件命名格式
 
 v2.1.0 (2026-03-17)
   - 改进安装体验：单行命令支持安装/升级
   - 智能处理目录已存在的情况
   - 依赖问题不会中断流程，仅警告
-
-v2.0.0 (2026-03-17)
-  - 新增实际对话保存功能：解析 OpenClaw session 文件
-  - 自动保存模式：定时监控并保存新对话
-  - 手动保存命令：save-now 立即保存当前对话
-  - 状态追踪：增量保存，避免重复
-  - 话题检测：自动从对话中提取主题
 
 v1.3.2 (2026-03-16)
   - 新版本覆盖安装：目录已存在时自动 git pull 更新
@@ -750,6 +750,187 @@ show_saved() {
     done
 }
 
+# ==================== 项目保存功能 ====================
+
+# 保存项目成果
+project_save() {
+    local PROJECT_NAME="$1"
+    local TOPIC="$2"
+    local VERSION="$3"
+    local CONTENT="$4"
+    
+    if [[ -z "$PROJECT_NAME" || -z "$TOPIC" ]]; then
+        print_error "用法: $0 project-save <项目名> <主题> [版本号]"
+        echo ""
+        echo "示例:"
+        echo "  $0 project-save 新建代理 问题1-代理配置 v1"
+        echo "  echo '内容...' | $0 project-save 新建代理 问题1"
+        return 1
+    fi
+    
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        print_error "请先配置"
+        return 1
+    fi
+    
+    # 获取内容
+    if [[ -z "$CONTENT" ]]; then
+        if [[ ! -t 0 ]]; then
+            CONTENT=$(cat)
+        else
+            print_error "请通过 stdin 或参数提供内容"
+            return 1
+        fi
+    fi
+    
+    local ROOT=$(read_config '.obsidianRoot')
+    local NAME=$(read_config '.agent.name')
+    local HOST=$(read_config '.agent.host')
+    
+    local DATE_SHORT=$(TZ='Asia/Shanghai' date +%y%m%d)
+    local AGENT_DIR="$ROOT/${NAME}@${HOST}"
+    local PROJECT_DIR="$AGENT_DIR/$DATE_SHORT/项目-$PROJECT_NAME"
+    
+    mkdir -p "$PROJECT_DIR"
+    
+    # 确定版本号
+    if [[ -z "$VERSION" ]]; then
+        local MAX_V=0
+        if [[ -d "$PROJECT_DIR" ]]; then
+            for f in "$PROJECT_DIR"/*.md; do
+                [[ -f "$f" ]] || continue
+                local V=$(basename "$f" .md | grep -o 'v[0-9]*$' | sed 's/v//')
+                [[ -n "$V" && "$V" -gt "$MAX_V" ]] && MAX_V=$V
+            done
+        fi
+        VERSION="v$((MAX_V + 1))"
+    elif [[ ! "$VERSION" =~ ^v ]]; then
+        VERSION="v$VERSION"
+    fi
+    
+    local FILENAME="${TOPIC}-${VERSION}.md"
+    local FILEPATH="$PROJECT_DIR/$FILENAME"
+    
+    local DATE_LONG=$(TZ='Asia/Shanghai' date +%Y-%m-%d)
+    local TIME=$(TZ='Asia/Shanghai' date +%H:%M)
+    local ISO_TIME=$(TZ='Asia/Shanghai' date +%Y-%m-%dT%H:%M:%S+08:00)
+    
+    local FRONTMATTER="---
+date: $DATE_LONG
+time: $TIME
+agent: $NAME
+host: $HOST
+project: $PROJECT_NAME
+topic: $TOPIC
+version: $VERSION
+tags: [\"项目成果\", \"$PROJECT_NAME\"]
+created: $ISO_TIME
+updated: $ISO_TIME
+type: project
+---
+
+# $TOPIC ($VERSION)
+
+"
+    
+    echo "$FRONTMATTER$CONTENT" > "$FILEPATH"
+    
+    print_success "项目成果已保存"
+    echo "  项目: $PROJECT_NAME"
+    echo "  主题: $TOPIC"
+    echo "  版本: $VERSION"
+    echo "  文件: $FILEPATH"
+}
+
+# 列出项目
+list_projects() {
+    local ROOT=$(read_config '.obsidianRoot')
+    local NAME=$(read_config '.agent.name')
+    local HOST=$(read_config '.agent.host')
+    
+    if [[ -z "$ROOT" || "$ROOT" == "null" ]]; then
+        print_warning "请先配置"
+        return 1
+    fi
+    
+    local AGENT_DIR="$ROOT/${NAME}@${HOST}"
+    
+    if [[ ! -d "$AGENT_DIR" ]]; then
+        print_info "暂无项目"
+        return 0
+    fi
+    
+    print_step "项目列表:"
+    echo ""
+    
+    local FOUND=0
+    for DATE_DIR in "$AGENT_DIR"/*/; do
+        [[ -d "$DATE_DIR" ]] || continue
+        local DATE_NAME=$(basename "$DATE_DIR")
+        
+        for PROJECT_DIR in "$DATE_DIR"项目-*/; do
+            [[ -d "$PROJECT_DIR" ]] || continue
+            local PROJECT_NAME=$(basename "$PROJECT_DIR" | sed 's/^项目-//')
+            local FILE_COUNT=$(find "$PROJECT_DIR" -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')
+            
+            echo -e "${CYAN}$PROJECT_NAME${NC} ($DATE_NAME, $FILE_COUNT 个文件)"
+            
+            # 列出版本
+            for f in "$PROJECT_DIR"*.md; do
+                [[ -f "$f" ]] || continue
+                local FNAME=$(basename "$f" .md)
+                local V=$(echo "$FNAME" | grep -o 'v[0-9]*$')
+                local T=$(echo "$FNAME" | sed 's/-v[0-9]*$//')
+                echo "  └─ $T ($V)"
+            done
+            echo ""
+            FOUND=1
+        done
+    done
+    
+    [[ "$FOUND" -eq 0 ]] && print_info "暂无项目"
+}
+
+# 列出项目版本
+list_project_versions() {
+    local PROJECT_NAME="$1"
+    
+    if [[ -z "$PROJECT_NAME" ]]; then
+        print_error "用法: $0 project-versions <项目名>"
+        return 1
+    fi
+    
+    local ROOT=$(read_config '.obsidianRoot')
+    local NAME=$(read_config '.agent.name')
+    local HOST=$(read_config '.agent.host')
+    
+    local AGENT_DIR="$ROOT/${NAME}@${HOST}"
+    local FOUND=0
+    
+    for DATE_DIR in "$AGENT_DIR"/*/; do
+        [[ -d "$DATE_DIR" ]] || continue
+        local PROJECT_DIR="$DATE_DIR项目-$PROJECT_NAME"
+        
+        if [[ -d "$PROJECT_DIR" ]]; then
+            local DATE_NAME=$(basename "$DATE_DIR")
+            echo -e "${CYAN}日期: $DATE_NAME${NC}"
+            
+            for f in "$PROJECT_DIR"*.md; do
+                [[ -f "$f" ]] || continue
+                local FNAME=$(basename "$f" .md)
+                local V=$(echo "$FNAME" | grep -o 'v[0-9]*$')
+                local T=$(echo "$FNAME" | sed 's/-v[0-9]*$//')
+                local SIZE=$(ls -lh "$f" | awk '{print $5}')
+                echo "  └─ $T ($V, $SIZE)"
+            done
+            echo ""
+            FOUND=1
+        fi
+    done
+    
+    [[ "$FOUND" -eq 0 ]] && print_info "未找到项目: $PROJECT_NAME"
+}
+
 # ==================== 安装/卸载 ====================
 
 do_install() {
@@ -995,6 +1176,12 @@ case "${1:-}" in
     reset-state)    reset_state ;;
     saved)          show_saved ;;
     
+    # 项目相关命令
+    project-save)   shift; project_save "$@" ;;
+    project-list)   list_projects ;;
+    projects)       list_projects ;;
+    project-versions) shift; list_project_versions "$@" ;;
+    
     _start_service) 
         start_webdav
         local SAVE_MODE=$(read_config '.saveMode')
@@ -1007,15 +1194,24 @@ case "${1:-}" in
         echo "用法: $0 [命令]"
         echo ""
         echo "命令:"
-        echo "  (无参数)        进入交互菜单"
-        echo "  install        安装/重新安装"
-        echo "  config         修改配置"
-        echo "  start          启动服务"
-        echo "  stop           停止服务"
-        echo "  status         查看状态"
-        echo "  save-now       立即保存对话"
-        echo "  saved          查看已保存的对话"
-        echo "  update         检查更新"
-        echo "  uninstall      卸载"
+        echo "  (无参数)          进入交互菜单"
+        echo "  install          安装/重新安装"
+        echo "  config           修改配置"
+        echo "  start            启动服务"
+        echo "  stop             停止服务"
+        echo "  status           查看状态"
+        echo "  save-now         立即保存对话"
+        echo "  saved            查看已保存的对话"
+        echo ""
+        echo "项目命令:"
+        echo "  project-save <项目名> <主题> [版本]"
+        echo "                    保存项目成果"
+        echo "  project-list     列出所有项目"
+        echo "  project-versions <项目名>"
+        echo "                    列出项目的所有版本"
+        echo ""
+        echo "其他:"
+        echo "  update           检查更新"
+        echo "  uninstall        卸载"
         ;;
 esac
