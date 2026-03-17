@@ -9,10 +9,20 @@
 # ============================================================
 
 # ==================== 版本信息 ====================
-VERSION="2.3.0"
+VERSION="2.4.0"
 RELEASE_DATE="2026-03-17"
 
 CHANGELOG="
+v2.4.0 (2026-03-17)
+  - 新增软链接管理功能：
+    - claw-对话/ 对话历史目录
+    - claw-配置/ 代理配置文件链接
+    - claw-工作区/ 共享工作区链接
+  - 新增目录初始化：~/agents/ 目录结构
+  - 新增迁移命令：migrate 迁移旧目录结构
+  - 新增链接命令：links, links-status, link-agent
+  - 配置文件新增 structure、links、agents 配置项
+
 v2.3.0 (2026-03-17)
   - 新增项目文件夹功能：保存项目成果到独立目录
   - 新增版本化保存：文件名包含版本号，保留历史版本
@@ -931,6 +941,340 @@ list_project_versions() {
     [[ "$FOUND" -eq 0 ]] && print_info "未找到项目: $PROJECT_NAME"
 }
 
+# ==================== 软链接管理功能 ====================
+
+# 展开路径（支持 ~）
+expand_path() {
+    echo "${1/#\~/$HOME}"
+}
+
+# 创建软链接
+create_symlink() {
+    local LINK_PATH="$1"
+    local TARGET_PATH="$2"
+    local FORCE="$3"
+    
+    TARGET_PATH=$(expand_path "$TARGET_PATH")
+    
+    # 确保目标目录存在
+    mkdir -p "$(dirname "$LINK_PATH")"
+    
+    # 检查链接是否已存在
+    if [[ -L "$LINK_PATH" ]]; then
+        local CURRENT_TARGET=$(readlink "$LINK_PATH")
+        if [[ "$CURRENT_TARGET" == "$TARGET_PATH" ]]; then
+            print_info "链接已存在且正确: $LINK_PATH"
+            return 0
+        elif [[ "$FORCE" == "true" ]]; then
+            rm -f "$LINK_PATH"
+        else
+            print_warning "链接已存在但指向不同: $LINK_PATH"
+            print_info "  当前: $CURRENT_TARGET"
+            print_info "  期望: $TARGET_PATH"
+            return 1
+        fi
+    elif [[ -e "$LINK_PATH" ]]; then
+        if [[ "$FORCE" == "true" ]]; then
+            rm -rf "$LINK_PATH"
+        else
+            print_warning "路径已存在（非链接）: $LINK_PATH"
+            return 1
+        fi
+    fi
+    
+    # 创建链接
+    ln -s "$TARGET_PATH" "$LINK_PATH"
+    print_success "创建链接: $LINK_PATH -> $TARGET_PATH"
+    return 0
+}
+
+# 初始化代理目录结构
+init_agents_structure() {
+    print_step "初始化代理目录结构..."
+    
+    local AGENTS_ROOT=$(read_config '.agents.rootDir')
+    AGENTS_ROOT=$(expand_path "${AGENTS_ROOT:-~/agents}")
+    
+    # 创建目录结构
+    mkdir -p "$AGENTS_ROOT/shared/projects"
+    mkdir -p "$AGENTS_ROOT/shared/SOP"
+    mkdir -p "$AGENTS_ROOT/shared/reports"
+    mkdir -p "$AGENTS_ROOT/.templates"
+    
+    print_success "目录已创建: $AGENTS_ROOT/"
+    echo "  ├── shared/"
+    echo "  │   ├── projects/"
+    echo "  │   ├── SOP/"
+    echo "  │   └── reports/"
+    echo "  └── .templates/"
+    
+    # 创建模板文件（如果不存在）
+    local SOUL_TEMPLATE="$AGENTS_ROOT/.templates/SOUL.md.template"
+    local JOB_TEMPLATE="$AGENTS_ROOT/.templates/JOB.md.template"
+    
+    if [[ ! -f "$SOUL_TEMPLATE" ]]; then
+        cat > "$SOUL_TEMPLATE" << 'EOF'
+# SOUL.md - 代理人格
+
+- **Name:** {name}
+- **Creature:** AI
+- **Vibe:** 专业、可靠、主动
+- **Emoji:** {emoji}
+
+## Mission
+
+{mission}
+
+## Rules
+
+1. 遵循工作流程
+2. 主动报告进展
+3. 遇到问题及时反馈
+EOF
+        print_info "创建模板: SOUL.md.template"
+    fi
+    
+    if [[ ! -f "$JOB_TEMPLATE" ]]; then
+        cat > "$JOB_TEMPLATE" << 'EOF'
+# JOB.md - 工作职责
+
+## 主要职责
+
+{responsibilities}
+
+## 技能列表
+
+{skills}
+
+## 工作流程
+
+{workflow}
+
+## 报告要求
+
+{reporting}
+EOF
+        print_info "创建模板: JOB.md.template"
+    fi
+}
+
+# 创建软链接
+setup_links() {
+    print_step "创建软链接..."
+    
+    local ROOT=$(read_config '.obsidianRoot')
+    if [[ -z "$ROOT" || "$ROOT" == "null" ]]; then
+        print_error "请先配置 obsidianRoot"
+        return 1
+    fi
+    
+    local LINKS_ENABLED=$(read_config '.links.enabled')
+    if [[ "$LINKS_ENABLED" != "true" ]]; then
+        print_info "软链接功能未启用"
+        return 0
+    fi
+    
+    # 获取目录名配置
+    local DIALOG_DIR=$(read_config '.structure.dialogDir')
+    local CONFIG_DIR=$(read_config '.structure.configDir')
+    local WORKSPACE_DIR=$(read_config '.structure.workspaceDir')
+    
+    DIALOG_DIR="${DIALOG_DIR:-claw-对话}"
+    CONFIG_DIR="${CONFIG_DIR:-claw-配置}"
+    WORKSPACE_DIR="${WORKSPACE_DIR:-claw-工作区}"
+    
+    local MANAGER_NAME=$(read_config '.links.manager.name')
+    local MANAGER_TARGET=$(read_config '.links.manager.target')
+    local SHARED_NAME=$(read_config '.links.shared.name')
+    local SHARED_TARGET=$(read_config '.links.shared.target')
+    
+    MANAGER_NAME="${MANAGER_NAME:-管理者}"
+    MANAGER_TARGET="${MANAGER_TARGET:-~/.openclaw/workspace}"
+    SHARED_NAME="${SHARED_NAME:-shared}"
+    SHARED_TARGET="${SHARED_TARGET:-~/agents/shared}"
+    
+    # 创建 claw-配置/ 目录和链接
+    local CONFIG_LINK="$ROOT/$CONFIG_DIR/$MANAGER_NAME"
+    print_step "创建配置链接..."
+    create_symlink "$CONFIG_LINK" "$MANAGER_TARGET" "true"
+    
+    # 创建 claw-工作区/ 目录和链接
+    local WORKSPACE_LINK="$ROOT/$WORKSPACE_DIR/$SHARED_NAME"
+    print_step "创建工作区链接..."
+    create_symlink "$WORKSPACE_LINK" "$SHARED_TARGET" "true"
+    
+    print_success "软链接创建完成"
+}
+
+# 查看链接状态
+links_status() {
+    print_step "软链接状态:"
+    echo ""
+    
+    local ROOT=$(read_config '.obsidianRoot')
+    if [[ -z "$ROOT" || "$ROOT" == "null" ]]; then
+        print_error "请先配置"
+        return 1
+    fi
+    
+    local DIALOG_DIR=$(read_config '.structure.dialogDir')
+    local CONFIG_DIR=$(read_config '.structure.configDir')
+    local WORKSPACE_DIR=$(read_config '.structure.workspaceDir')
+    
+    DIALOG_DIR="${DIALOG_DIR:-claw-对话}"
+    CONFIG_DIR="${CONFIG_DIR:-claw-配置}"
+    WORKSPACE_DIR="${WORKSPACE_DIR:-claw-工作区}"
+    
+    # 检查 claw-对话
+    local DIALOG_PATH="$ROOT/$DIALOG_DIR"
+    echo -e "${CYAN}$DIALOG_DIR/${NC}"
+    if [[ -d "$DIALOG_PATH" ]]; then
+        echo "  状态: 目录存在"
+        echo "  文件数: $(find "$DIALOG_PATH" -name "*.md" -type f 2>/dev/null | wc -l | tr -d ' ')"
+    else
+        echo "  状态: ${YELLOW}不存在${NC}"
+    fi
+    echo ""
+    
+    # 检查 claw-配置
+    local CONFIG_PATH="$ROOT/$CONFIG_DIR"
+    echo -e "${CYAN}$CONFIG_DIR/${NC}"
+    if [[ -d "$CONFIG_PATH" ]]; then
+        echo "  内容:"
+        for link in "$CONFIG_PATH"/*; do
+            if [[ -L "$link" ]]; then
+                local TARGET=$(readlink "$link")
+                local NAME=$(basename "$link")
+                echo "    ├── $NAME -> $TARGET"
+            fi
+        done
+    else
+        echo "  状态: ${YELLOW}不存在${NC}"
+    fi
+    echo ""
+    
+    # 检查 claw-工作区
+    local WORKSPACE_PATH="$ROOT/$WORKSPACE_DIR"
+    echo -e "${CYAN}$WORKSPACE_DIR/${NC}"
+    if [[ -d "$WORKSPACE_PATH" ]]; then
+        echo "  内容:"
+        for link in "$WORKSPACE_PATH"/*; do
+            if [[ -L "$link" ]]; then
+                local TARGET=$(readlink "$link")
+                local NAME=$(basename "$link")
+                echo "    ├── $NAME -> $TARGET"
+            fi
+        done
+    else
+        echo "  状态: ${YELLOW}不存在${NC}"
+    fi
+}
+
+# 添加代理配置链接
+link_agent() {
+    local AGENT_NAME="$1"
+    local AGENT_TARGET="$2"
+    
+    if [[ -z "$AGENT_NAME" || -z "$AGENT_TARGET" ]]; then
+        print_error "用法: $0 link-agent <代理名> <目标路径>"
+        echo ""
+        echo "示例:"
+        echo "  $0 link-agent 人事主管 ~/agents/hr-manager"
+        return 1
+    fi
+    
+    local ROOT=$(read_config '.obsidianRoot')
+    local CONFIG_DIR=$(read_config '.structure.configDir')
+    CONFIG_DIR="${CONFIG_DIR:-claw-配置}"
+    
+    local CONFIG_LINK="$ROOT/$CONFIG_DIR/$AGENT_NAME"
+    
+    print_step "添加代理配置链接..."
+    create_symlink "$CONFIG_LINK" "$AGENT_TARGET" "false"
+}
+
+# 迁移旧目录结构
+migrate_structure() {
+    print_step "迁移目录结构..."
+    
+    local ROOT=$(read_config '.obsidianRoot')
+    local AGENT_NAME=$(read_config '.agent.name')
+    local AGENT_HOST=$(read_config '.agent.host')
+    
+    if [[ -z "$ROOT" || "$ROOT" == "null" ]]; then
+        print_error "请先配置"
+        return 1
+    fi
+    
+    local DIALOG_DIR=$(read_config '.structure.dialogDir')
+    DIALOG_DIR="${DIALOG_DIR:-claw-对话}"
+    
+    local OLD_DIR="$ROOT/${AGENT_NAME}@${AGENT_HOST}"
+    local NEW_DIR="$ROOT/$DIALOG_DIR/${AGENT_NAME}@${AGENT_HOST}"
+    
+    # 检查旧目录是否存在
+    if [[ ! -d "$OLD_DIR" ]]; then
+        print_info "旧目录不存在，无需迁移: $OLD_DIR"
+        return 0
+    fi
+    
+    # 检查新目录是否已存在
+    if [[ -d "$NEW_DIR" ]]; then
+        print_warning "新目录已存在: $NEW_DIR"
+        echo -n "是否覆盖？[y/N]: "
+        read -r CONFIRM
+        if [[ ! "$CONFIRM" =~ ^[Yy] ]]; then
+            print_info "已取消"
+            return 0
+        fi
+        rm -rf "$NEW_DIR"
+    fi
+    
+    # 创建新目录的父目录
+    mkdir -p "$(dirname "$NEW_DIR")"
+    
+    # 移动目录
+    mv "$OLD_DIR" "$NEW_DIR"
+    
+    print_success "迁移完成"
+    echo "  旧: $OLD_DIR"
+    echo "  新: $NEW_DIR"
+}
+
+# 完整初始化
+full_init() {
+    print_header
+    print_step "完整初始化..."
+    echo ""
+    
+    # 1. 初始化代理目录
+    init_agents_structure
+    echo ""
+    
+    # 2. 创建软链接
+    setup_links
+    echo ""
+    
+    # 3. 迁移旧目录（如果需要）
+    local ROOT=$(read_config '.obsidianRoot')
+    local AGENT_NAME=$(read_config '.agent.name')
+    local AGENT_HOST=$(read_config '.agent.host')
+    local OLD_DIR="$ROOT/${AGENT_NAME}@${AGENT_HOST}"
+    
+    if [[ -d "$OLD_DIR" ]]; then
+        print_step "检测到旧目录结构"
+        echo -n "是否迁移到新结构？[Y/n]: "
+        read -r CONFIRM
+        if [[ ! "$CONFIRM" =~ ^[Nn] ]]; then
+            migrate_structure
+        fi
+    fi
+    
+    echo ""
+    print_success "初始化完成"
+    links_status
+}
+
 # ==================== 安装/卸载 ====================
 
 do_install() {
@@ -1182,6 +1526,14 @@ case "${1:-}" in
     projects)       list_projects ;;
     project-versions) shift; list_project_versions "$@" ;;
     
+    # 软链接相关命令
+    links)          setup_links ;;
+    links-status)   links_status ;;
+    link-agent)     shift; link_agent "$@" ;;
+    init-agents)    init_agents_structure ;;
+    migrate)        migrate_structure ;;
+    init)           full_init ;;
+    
     _start_service) 
         start_webdav
         local SAVE_MODE=$(read_config '.saveMode')
@@ -1209,6 +1561,15 @@ case "${1:-}" in
         echo "  project-list     列出所有项目"
         echo "  project-versions <项目名>"
         echo "                    列出项目的所有版本"
+        echo ""
+        echo "链接与初始化:"
+        echo "  init             完整初始化（推荐首次使用）"
+        echo "  links            创建/更新软链接"
+        echo "  links-status     查看链接状态"
+        echo "  link-agent <名> <路径>"
+        echo "                    添加代理配置链接"
+        echo "  init-agents      初始化代理目录结构"
+        echo "  migrate          迁移旧目录结构"
         echo ""
         echo "其他:"
         echo "  update           检查更新"

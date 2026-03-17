@@ -349,6 +349,35 @@ def format_messages_as_markdown(messages: list, date_str: str, time_str: str) ->
     return '\n'.join(lines)
 
 
+def get_dialog_dir(config: dict) -> Path:
+    """
+    获取对话保存目录
+    支持新的 claw-对话/ 目录结构
+    """
+    obsidian_root = config.get('obsidianRoot')
+    if not obsidian_root:
+        return None
+    
+    # 获取对话目录配置
+    dialog_dir_name = config.get('structure', {}).get('dialogDir', 'claw-对话')
+    agent_name = config.get('agent', {}).get('name', 'Assistant')
+    agent_host = config.get('agent', {}).get('host', 'localhost')
+    
+    output_dir = Path(obsidian_root)
+    
+    # 检查新结构是否存在
+    new_dialog_dir = output_dir / dialog_dir_name / f"{agent_name}@{agent_host}"
+    old_dialog_dir = output_dir / f"{agent_name}@{agent_host}"
+    
+    if new_dialog_dir.exists() or (output_dir / dialog_dir_name).exists():
+        return output_dir / dialog_dir_name
+    elif old_dialog_dir.exists():
+        return output_dir
+    else:
+        # 默认使用新结构
+        return output_dir / dialog_dir_name
+
+
 def save_dialog_to_markdown(
     messages: list,
     output_dir: Path,
@@ -356,11 +385,14 @@ def save_dialog_to_markdown(
     agent_host: str,
     topic: str = None,
     project: str = None,
-    tags: list = None
+    tags: list = None,
+    config: dict = None
 ) -> Path:
     """
     保存对话到 Markdown 文件
-    文件名格式：YYMMDDHHMM+话题.md（移除session_id后缀）
+    文件名格式：YYMMDDHHMM+话题.md
+    
+    支持新的目录结构：claw-对话/代理名@主机名/YYMMDD/
     """
     
     if not messages:
@@ -381,8 +413,21 @@ def save_dialog_to_markdown(
     # 清理话题作为文件名
     topic_clean = sanitize_filename(topic, max_len=30)
     
-    # 构建目录路径
-    agent_dir = output_dir / f"{agent_name}@{agent_host}"
+    # 构建目录路径 - 支持新的 claw-对话/ 结构
+    if config:
+        dialog_base = get_dialog_dir(config)
+        if dialog_base:
+            agent_dir = dialog_base / f"{agent_name}@{agent_host}"
+        else:
+            agent_dir = output_dir / f"{agent_name}@{agent_host}"
+    else:
+        # 检查是否存在 claw-对话 目录
+        dialog_dir_name = "claw-对话"
+        if (output_dir / dialog_dir_name).exists():
+            agent_dir = output_dir / dialog_dir_name / f"{agent_name}@{agent_host}"
+        else:
+            agent_dir = output_dir / f"{agent_name}@{agent_host}"
+    
     date_dir = agent_dir / date_short
     
     if project:
