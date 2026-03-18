@@ -111,21 +111,56 @@ print_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 print_step() { echo -e "${CYAN}[STEP]${NC} $1"; }
 
 # ==================== JSON 读取函数 ====================
+
+# 查找代理级配置文件
+find_agent_config() {
+    # 检查当前工作目录及其父目录
+    local DIR="$PWD"
+    for i in {1..5}; do
+        if [[ -f "$DIR/dialog-save-config.json" ]]; then
+            echo "$DIR/dialog-save-config.json"
+            return 0
+        fi
+        [[ "$DIR" == "/" ]] && break
+        DIR="$(dirname "$DIR")"
+    done
+    # 检查 OPENCLAW_AGENT_DIR 环境变量
+    if [[ -n "$OPENCLAW_AGENT_DIR" && -f "$OPENCLAW_AGENT_DIR/dialog-save-config.json" ]]; then
+        echo "$OPENCLAW_AGENT_DIR/dialog-save-config.json"
+        return 0
+    fi
+    return 1
+}
+
 read_config() {
     local KEY="$1"
-    if [[ -f "$CONFIG_FILE" ]]; then
+    local CONFIG_TO_USE="$CONFIG_FILE"
+    
+    # 检查是否有代理级配置
+    local AGENT_CONFIG=$(find_agent_config)
+    if [[ -n "$AGENT_CONFIG" ]]; then
+        # 对于代理相关配置，优先使用代理级配置
+        case "$KEY" in
+            '.agent.name'|'.agent.host'|'.agent.id')
+                CONFIG_TO_USE="$AGENT_CONFIG"
+                ;;
+        esac
+    fi
+    
+    if [[ -f "$CONFIG_TO_USE" ]]; then
         if [[ -n "$JQ_CMD" ]]; then
-            "$JQ_CMD" -r "$KEY" "$CONFIG_FILE" 2>/dev/null
+            "$JQ_CMD" -r "$KEY" "$CONFIG_TO_USE" 2>/dev/null
         else
             case "$KEY" in
-                '.obsidianRoot') grep -o '"obsidianRoot"[^,]*' "$CONFIG_FILE" | cut -d'"' -f4 ;;
-                '.agent.name') grep -o '"name"[^,]*' "$CONFIG_FILE" | head -1 | cut -d'"' -f4 ;;
-                '.agent.host') grep -o '"host"[^,]*' "$CONFIG_FILE" | head -1 | cut -d'"' -f4 ;;
-                '.webdav.port') grep -o '"port"[^,}]*' "$CONFIG_FILE" | head -1 | grep -o '[0-9]*' ;;
-                '.mode') grep -o '"mode"[^,]*' "$CONFIG_FILE" | cut -d'"' -f4 ;;
-                '.autoStart') grep -o '"autoStart"[^,}]*' "$CONFIG_FILE" | grep -o 'true\|false' ;;
-                '.saveMode') grep -o '"saveMode"[^,}]*' "$CONFIG_FILE" | cut -d'"' -f4 ;;
-                '.version') grep -o '"version"[^,}]*' "$CONFIG_FILE" | head -1 | cut -d'"' -f4 ;;
+                '.obsidianRoot') grep -o '"obsidianRoot"[^,]*' "$CONFIG_TO_USE" | cut -d'"' -f4 ;;
+                '.agent.name') grep -o '"name"[^,]*' "$CONFIG_TO_USE" | head -1 | cut -d'"' -f4 ;;
+                '.agent.host') grep -o '"host"[^,]*' "$CONFIG_TO_USE" | head -1 | cut -d'"' -f4 ;;
+                '.agent.id') grep -o '"id"[^,]*' "$CONFIG_TO_USE" | head -1 | cut -d'"' -f4 ;;
+                '.webdav.port') grep -o '"port"[^,}]*' "$CONFIG_TO_USE" | head -1 | grep -o '[0-9]*' ;;
+                '.mode') grep -o '"mode"[^,]*' "$CONFIG_TO_USE" | cut -d'"' -f4 ;;
+                '.autoStart') grep -o '"autoStart"[^,}]*' "$CONFIG_TO_USE" | grep -o 'true\|false' ;;
+                '.saveMode') grep -o '"saveMode"[^,}]*' "$CONFIG_TO_USE" | cut -d'"' -f4 ;;
+                '.version') grep -o '"version"[^,}]*' "$CONFIG_TO_USE" | head -1 | cut -d'"' -f4 ;;
                 *) echo "" ;;
             esac
         fi
