@@ -474,7 +474,7 @@ updated: {iso_time}
 
 
 def get_active_sessions(sessions_file: Path = DEFAULT_SESSIONS_PATH / "sessions.json") -> list:
-    """获取活跃的 session 列表"""
+    """获取活跃的 session 列表（支持多代理）"""
     if not sessions_file.exists():
         return []
     
@@ -483,7 +483,8 @@ def get_active_sessions(sessions_file: Path = DEFAULT_SESSIONS_PATH / "sessions.
     
     sessions = []
     for session_key, session_data in data.items():
-        if session_key.startswith('agent:main:'):
+        # 支持所有代理，不只是 main
+        if session_key.startswith('agent:'):
             session_id = session_data.get('sessionId')
             session_file_path = session_data.get('sessionFile')
             updated_at = session_data.get('updatedAt')
@@ -507,13 +508,61 @@ def get_session_file_path(session_id: str) -> Path:
     return DEFAULT_SESSIONS_PATH / f"{session_id}.jsonl"
 
 
+def get_all_agent_sessions() -> list:
+    """获取所有代理的活跃会话"""
+    agents_dir = Path.home() / ".openclaw" / "agents"
+    all_sessions = []
+    
+    for agent_dir in agents_dir.iterdir():
+        if not agent_dir.is_dir():
+            continue
+        
+        agent_id = agent_dir.name
+        sessions_file = agent_dir / "sessions" / "sessions.json"
+        
+        if not sessions_file.exists():
+            continue
+        
+        # 读取代理的 dialog-save 配置
+        agent_config_file = Path.home() / ".openclaw" / "workspace" / "agents" / agent_id / "dialog-save-config.json"
+        agent_config = None
+        if agent_config_file.exists():
+            with open(agent_config_file, 'r', encoding='utf-8') as f:
+                agent_config = json.load(f)
+        
+        # 读取会话
+        with open(sessions_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        for session_key, session_data in data.items():
+            if session_key.startswith(f'agent:{agent_id}:'):
+                session_id = session_data.get('sessionId')
+                session_file_path = session_data.get('sessionFile')
+                updated_at = session_data.get('updatedAt')
+                
+                if session_id:
+                    all_sessions.append({
+                        'key': session_key,
+                        'id': session_id,
+                        'file': session_file_path,
+                        'updated_at': updated_at,
+                        'agent_id': agent_id,
+                        'agent_config': agent_config
+                    })
+    
+    # 按更新时间排序
+    all_sessions.sort(key=lambda x: x.get('updated_at', 0) or 0, reverse=True)
+    
+    return all_sessions
+
+
 def run_auto_save(
     config: dict = None,
     state: dict = None,
     save_state_after: bool = True
 ) -> list:
     """
-    运行自动保存
+    运行自动保存（支持多代理）
     
     返回: [保存的文件路径, ...]
     """
@@ -533,13 +582,10 @@ def run_auto_save(
         print("Error: obsidianRoot not configured", file=sys.stderr)
         return []
     
-    agent_name = config.get('agent', {}).get('name', 'Assistant')
-    agent_host = config.get('agent', {}).get('host', 'localhost')
-    
     output_dir = Path(obsidian_root)
     
-    # 获取活跃 sessions
-    sessions = get_active_sessions()
+    # 获取所有代理的活跃 sessions
+    sessions = get_all_agent_sessions()
     if not sessions:
         return []
     
@@ -549,9 +595,20 @@ def run_auto_save(
     for session in sessions:
         session_id = session['id']
         session_file = session.get('file')
+        agent_id = session.get('agent_id', 'main')
+        agent_config = session.get('agent_config')
+        
+        # 确定代理名称和主机
+        if agent_config:
+            agent_name = agent_config.get('agent', {}).get('name', agent_id)
+            agent_host = agent_config.get('agent', {}).get('host', 'localhost')
+        else:
+            agent_name = config.get('agent', {}).get('name', 'Assistant')
+            agent_host = config.get('agent', {}).get('host', 'localhost')
         
         if not session_file:
-            session_file = str(get_session_file_path(session_id))
+            # 尝试从代理目录获取
+            session_file = str(Path.home() / ".openclaw" / "agents" / agent_id / "sessions" / f"{session_id}.jsonl")
         
         session_path = Path(session_file)
         if not session_path.exists():
