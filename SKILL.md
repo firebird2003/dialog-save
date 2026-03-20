@@ -2,6 +2,11 @@
 
 将 OpenClaw 对话自动保存为 Markdown 文件，支持 Obsidian 笔记库查看和 iCloud 同步。
 
+## 版本信息
+
+- **当前版本**: v2.6.0
+- **发布日期**: 2026-03-20
+
 ## 一键安装/升级
 
 ```bash
@@ -18,12 +23,12 @@ bash <(curl -sL https://raw.githubusercontent.com/firebird2003/dialog-save/main/
 │           ├── 2603171800+对话主题.md
 │           └── 项目-xxx/
 │
-├── claw-配置/                    # 代理配置文件（软链接）
+├── claw-配置/                    # 代理配置文件（链接）
 │   ├── 管理者/ → ~/.openclaw/workspace/
 │   ├── 人事主管/ → ~/agents/hr-manager/
 │   └── ...
 │
-└── claw-工作区/                  # 共享工作区（软链接）
+└── claw-工作区/                  # 共享工作区（链接）
     └── shared/ → ~/agents/shared/
         ├── projects/
         ├── SOP/
@@ -42,6 +47,32 @@ bash <(curl -sL https://raw.githubusercontent.com/firebird2003/dialog-save/main/
 | `claw-配置/` | 代理配置 | 各代理的 SOUL.md、JOB.md 等配置文件 |
 | `claw-工作区/` | 共享工作区 | 项目成果、SOP、团队报告 |
 
+## 新功能：硬链接支持
+
+v2.6.0 新增硬链接支持，解决 Obsidian 无法识别软链接的问题：
+
+- **软链接 (Symbolic Link)**: 兼容性好，但 Obsidian 可能无法识别
+- **硬链接 (Hard Link)**: Obsidian 可直接识别，文件可在 Obsidian 中编辑
+
+### 配置时选择链接类型
+
+```
+【第六步】链接设置
+链接类型：
+  1) 软链接 (symbolic link) - 兼容性更好
+  2) 硬链接 (hard link) - Obsidian 可直接识别
+```
+
+### 手动切换链接类型
+
+```bash
+# 查看当前链接状态
+bash scripts/manage.sh links-status
+
+# 重新创建链接（修改配置后）
+bash scripts/manage.sh links
+```
+
 ## 快速开始
 
 ```bash
@@ -51,7 +82,7 @@ bash scripts/manage.sh init
 # 这会：
 # 1. 创建 ~/agents/ 目录结构
 # 2. 创建 claw-对话、claw-配置、claw-工作区 目录
-# 3. 创建软链接
+# 3. 创建链接（软链接或硬链接）
 # 4. 迁移旧目录（如果存在）
 ```
 
@@ -69,7 +100,7 @@ bash scripts/manage.sh saved        # 查看已保存的对话
 ### 链接与初始化
 ```bash
 bash scripts/manage.sh init         # 完整初始化
-bash scripts/manage.sh links        # 创建/更新软链接
+bash scripts/manage.sh links        # 创建/更新链接
 bash scripts/manage.sh links-status # 查看链接状态
 bash scripts/manage.sh migrate      # 迁移旧目录结构
 bash scripts/manage.sh init-agents  # 初始化代理目录结构
@@ -115,7 +146,7 @@ echo "内容" | bash scripts/manage.sh project-save <项目名> <主题>
 
 ```json
 {
-  "version": "2.4.0",
+  "version": "2.6.0",
   "obsidianRoot": "/path/to/obsidian",
   "structure": {
     "dialogDir": "claw-对话",
@@ -124,6 +155,7 @@ echo "内容" | bash scripts/manage.sh project-save <项目名> <主题>
   },
   "links": {
     "enabled": true,
+    "useHardlink": false,
     "manager": {
       "name": "管理者",
       "target": "~/.openclaw/workspace"
@@ -140,6 +172,12 @@ echo "内容" | bash scripts/manage.sh project-save <项目名> <主题>
 }
 ```
 
+### 配置项说明
+
+| 配置项 | 说明 |
+|--------|------|
+| `links.useHardlink` | `true` 使用硬链接，`false` 使用软链接 |
+
 ## 代理目录结构
 
 首次运行 `init` 后，会创建：
@@ -155,19 +193,30 @@ echo "内容" | bash scripts/manage.sh project-save <项目名> <主题>
     └── JOB.md.template
 ```
 
+## 多代理支持
+
+dialog-save 自动扫描所有代理的会话目录：
+
+```
+~/.openclaw/agents/
+├── main/sessions/        # 主代理会话
+├── hr-003/sessions/      # 人事代理会话
+└── .../sessions/         # 其他代理会话
+```
+
+每个代理可以有独立的配置文件：
+
+```
+~/.openclaw/agents/<agent-id>/
+└── dialog-save-config.json   # 代理级配置
+```
+
 ## 更新日志
 
-### v2.4.0 (2026-03-17)
-- 新增软链接管理功能
-- 新增目录初始化
-- 新增迁移命令
-- 新增链接命令
+### v2.6.0 (2026-03-20)
+- 新增硬链接支持
+- 完善多代理支持
+- 监控服务增强
+- 问题修复
 
-### v2.3.0 (2026-03-17)
-- 新增项目文件夹功能
-- 新增版本化保存
-
-### v2.2.0 (2026-03-17)
-- 改进话题提取
-- 文件名简化
-- 内容清理
+详见 [CHANGELOG.md](CHANGELOG.md)

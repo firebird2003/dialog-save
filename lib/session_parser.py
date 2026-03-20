@@ -513,26 +513,43 @@ def get_all_agent_sessions() -> list:
     agents_dir = Path.home() / ".openclaw" / "agents"
     all_sessions = []
     
+    if not agents_dir.exists():
+        return all_sessions
+    
     for agent_dir in agents_dir.iterdir():
         if not agent_dir.is_dir():
             continue
         
         agent_id = agent_dir.name
-        sessions_file = agent_dir / "sessions" / "sessions.json"
+        sessions_dir = agent_dir / "sessions"
+        sessions_file = sessions_dir / "sessions.json"
         
         if not sessions_file.exists():
             continue
         
         # 读取代理的 dialog-save 配置
-        agent_config_file = Path.home() / ".openclaw" / "workspace" / "agents" / agent_id / "dialog-save-config.json"
+        # 优先级：代理目录 > 工作区 > 默认
         agent_config = None
-        if agent_config_file.exists():
-            with open(agent_config_file, 'r', encoding='utf-8') as f:
-                agent_config = json.load(f)
+        config_paths = [
+            agent_dir / "dialog-save-config.json",
+            Path.home() / ".openclaw" / "workspace" / "agents" / agent_id / "dialog-save-config.json",
+        ]
+        
+        for config_path in config_paths:
+            if config_path.exists():
+                try:
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        agent_config = json.load(f)
+                    break
+                except Exception:
+                    pass
         
         # 读取会话
-        with open(sessions_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        try:
+            with open(sessions_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            continue
         
         for session_key, session_data in data.items():
             if session_key.startswith(f'agent:{agent_id}:'):

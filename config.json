@@ -1,5 +1,5 @@
 {
-  "version": "2.5.0",
+  "version": "2.6.0",
   "obsidianRoot": "/Users/yeji/Library/Mobile Documents/iCloud~md~obsidian/Documents/YejiNote/00claw",
   "saveDir": "00claw",
   "webdav": {
@@ -27,6 +27,7 @@
   },
   "links": {
     "enabled": true,
+    "useHardlink": false,
     "manager": {
       "name": "管理者",
       "target": "~/.openclaw/workspace"

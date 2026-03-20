@@ -9,10 +9,27 @@
 # ============================================================
 
 # ==================== 版本信息 ====================
-VERSION="2.5.0"
-RELEASE_DATE="2026-03-17"
+VERSION="2.6.0"
+RELEASE_DATE="2026-03-20"
 
 CHANGELOG="
+v2.6.0 (2026-03-20)
+  - 新增硬链接支持：
+    - 支持 --use-hardlink 选项
+    - 解决 Obsidian 无法识别软链接的问题
+    - 硬链接文件可直接在 Obsidian 中编辑
+  - 完善多代理支持：
+    - 修复 get_all_agent_sessions() 扫描逻辑
+    - 自动发现所有代理目录
+  - 监控服务增强：
+    - 添加心跳检测机制
+    - 自动重启功能
+    - 详细错误日志
+  - 问题修复：
+    - 版本号统一
+    - 目录结构统一
+    - 配置文件路径处理优化
+
 v2.5.0 (2026-03-17)
   - 优化配置流程：
     - 分两步引导：先指定 Obsidian 基础目录，再指定保存目录名
@@ -492,15 +509,28 @@ do_config() {
             ;;
     esac
     
-    # ========== 第六步：软链接设置 ==========
+    # ========== 第六步：链接设置 ==========
     echo ""
-    echo -e "${BOLD}【第六步】软链接设置${NC}"
+    echo -e "${BOLD}【第六步】链接设置${NC}"
     echo ""
-    echo "是否创建以下软链接？"
+    echo "是否创建以下链接？"
     echo "  • claw-配置/管理者 → ~/.openclaw/workspace/"
     echo "  • claw-工作区/shared → ~/agents/shared/"
     echo ""
-    echo -n "创建软链接？[Y/n]: "
+    echo "链接类型："
+    echo "  1) 软链接 (symbolic link) - 兼容性更好"
+    echo "  2) 硬链接 (hard link) - Obsidian 可直接识别"
+    echo ""
+    echo -n "请选择链接类型 [1/2, 默认1]: "
+    read -r LINK_TYPE_CHOICE
+    local USE_HARDLINK="false"
+    case "$LINK_TYPE_CHOICE" in
+        2) USE_HARDLINK="true" ; echo "  已选择: 硬链接" ;;
+        *) echo "  已选择: 软链接" ;;
+    esac
+    
+    echo ""
+    echo -n "创建链接？[Y/n]: "
     read -r LINKS_CHOICE
     local LINKS_ENABLED="true"
     [[ "$LINKS_CHOICE" =~ ^[Nn] ]] && LINKS_ENABLED="false"
@@ -584,6 +614,7 @@ do_config() {
   },
   "links": {
     "enabled": $LINKS_ENABLED,
+    "useHardlink": $USE_HARDLINK,
     "manager": {
       "name": "$AGENT_NAME",
       "target": "~/.openclaw/workspace"
@@ -1114,22 +1145,29 @@ expand_path() {
     echo "${1/#\~/$HOME}"
 }
 
-# 创建软链接
-create_symlink() {
+# 创建链接（支持硬链接和软链接）
+create_link() {
     local LINK_PATH="$1"
     local TARGET_PATH="$2"
     local FORCE="$3"
+    local USE_HARDLINK="${4:-false}"
     
     TARGET_PATH=$(expand_path "$TARGET_PATH")
     
     # 确保目标目录存在
     mkdir -p "$(dirname "$LINK_PATH")"
     
+    # 检查目标是否存在
+    if [[ ! -e "$TARGET_PATH" ]]; then
+        print_warning "目标路径不存在: $TARGET_PATH"
+        return 1
+    fi
+    
     # 检查链接是否已存在
     if [[ -L "$LINK_PATH" ]]; then
         local CURRENT_TARGET=$(readlink "$LINK_PATH")
         if [[ "$CURRENT_TARGET" == "$TARGET_PATH" ]]; then
-            print_info "链接已存在且正确: $LINK_PATH"
+            print_info "软链接已存在且正确: $LINK_PATH"
             return 0
         elif [[ "$FORCE" == "true" ]]; then
             rm -f "$LINK_PATH"
@@ -1137,6 +1175,19 @@ create_symlink() {
             print_warning "链接已存在但指向不同: $LINK_PATH"
             print_info "  当前: $CURRENT_TARGET"
             print_info "  期望: $TARGET_PATH"
+            return 1
+        fi
+    elif [[ -f "$LINK_PATH" ]]; then
+        # 检查是否是硬链接
+        local LINK_INODE=$(stat -f "%i" "$LINK_PATH" 2>/dev/null || stat -c "%i" "$LINK_PATH" 2>/dev/null)
+        local TARGET_INODE=$(stat -f "%i" "$TARGET_PATH" 2>/dev/null || stat -c "%i" "$TARGET_PATH" 2>/dev/null)
+        if [[ "$LINK_INODE" == "$TARGET_INODE" ]]; then
+            print_info "硬链接已存在且正确: $LINK_PATH"
+            return 0
+        elif [[ "$FORCE" == "true" ]]; then
+            rm -f "$LINK_PATH"
+        else
+            print_warning "文件已存在: $LINK_PATH"
             return 1
         fi
     elif [[ -e "$LINK_PATH" ]]; then
@@ -1149,9 +1200,25 @@ create_symlink() {
     fi
     
     # 创建链接
-    ln -s "$TARGET_PATH" "$LINK_PATH"
-    print_success "创建链接: $LINK_PATH -> $TARGET_PATH"
+    if [[ "$USE_HARDLINK" == "true" && -f "$TARGET_PATH" ]]; then
+        # 硬链接只适用于文件
+        ln "$TARGET_PATH" "$LINK_PATH"
+        print_success "创建硬链接: $LINK_PATH <=> $TARGET_PATH"
+    else
+        ln -s "$TARGET_PATH" "$LINK_PATH"
+        print_success "创建软链接: $LINK_PATH -> $TARGET_PATH"
+    fi
     return 0
+}
+
+# 兼容旧函数名
+create_symlink() {
+    create_link "$1" "$2" "$3" "false"
+}
+
+# 创建硬链接
+create_hardlink() {
+    create_link "$1" "$2" "$3" "true"
 }
 
 # 初始化代理目录结构
@@ -1226,7 +1293,7 @@ EOF
 
 # 创建软链接
 setup_links() {
-    print_step "创建软链接..."
+    print_step "创建链接..."
     
     local ROOT=$(read_config '.obsidianRoot')
     if [[ -z "$ROOT" || "$ROOT" == "null" ]]; then
@@ -1236,9 +1303,15 @@ setup_links() {
     
     local LINKS_ENABLED=$(read_config '.links.enabled')
     if [[ "$LINKS_ENABLED" != "true" ]]; then
-        print_info "软链接功能未启用"
+        print_info "链接功能未启用"
         return 0
     fi
+    
+    # 获取链接类型
+    local USE_HARDLINK=$(read_config '.links.useHardlink')
+    local LINK_TYPE="软链接"
+    [[ "$USE_HARDLINK" == "true" ]] && LINK_TYPE="硬链接"
+    print_info "链接类型: $LINK_TYPE"
     
     # 获取目录名配置
     local DIALOG_DIR=$(read_config '.structure.dialogDir')
@@ -1262,14 +1335,14 @@ setup_links() {
     # 创建 claw-配置/ 目录和链接
     local CONFIG_LINK="$ROOT/$CONFIG_DIR/$MANAGER_NAME"
     print_step "创建配置链接..."
-    create_symlink "$CONFIG_LINK" "$MANAGER_TARGET" "true"
+    create_link "$CONFIG_LINK" "$MANAGER_TARGET" "true" "$USE_HARDLINK"
     
     # 创建 claw-工作区/ 目录和链接
     local WORKSPACE_LINK="$ROOT/$WORKSPACE_DIR/$SHARED_NAME"
     print_step "创建工作区链接..."
-    create_symlink "$WORKSPACE_LINK" "$SHARED_TARGET" "true"
+    create_link "$WORKSPACE_LINK" "$SHARED_TARGET" "true" "$USE_HARDLINK"
     
-    print_success "软链接创建完成"
+    print_success "链接创建完成"
 }
 
 # 查看链接状态
